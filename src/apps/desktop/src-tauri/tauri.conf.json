@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.apiarray.desktop",
   "build": {
-    "beforeDevCommand": "npm.cmd run dev",
+    "beforeDevCommand": "npm.cmd run dev:web",
     "beforeBuildCommand": "npm.cmd run build",
-    "devUrl": "http://localhost:3000",
+    "devUrl": "http://127.0.0.1:3000",
     "frontendDist": "../out"
   },
   "app": {

@@ -4,6 +4,7 @@
 //! 无头 Runtime 复用。
 
 pub mod adapter;
+pub mod catalog;
 pub mod canonical;
 pub mod capability;
 pub mod cli;

@@ -6,11 +6,11 @@ use apiarray_core::canonical::{CanonicalRequest, CanonicalResponse};
 use apiarray_core::health::{EndpointHealth, HealthObservation, HealthPolicy};
 use apiarray_core::routing::{HealthStatus, StandardError};
 use apiarray_core::runtime::{CompiledRuntime, DispatchPlan, DispatchRequest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
 use std::future::Future;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
@@ -25,14 +25,14 @@ enum FailureAction {
     TryFailover,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptResult {
     Success,
     Failure,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttemptAudit {
     pub upstream_id: String,
     pub provider_instance: String,
@@ -42,7 +42,7 @@ pub struct AttemptAudit {
     pub error: Option<StandardError>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TraceResult {
     Success,
@@ -51,7 +51,7 @@ pub enum TraceResult {
 }
 
 /// 不包含请求正文、响应正文、URL、Header 或 Secret 的请求级审计记录。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionTrace {
     pub schema_version: u32,
     pub correlation_id: String,
@@ -145,6 +145,26 @@ impl AuditSink for JsonlAuditSink {
             RuntimeError::new(RuntimeErrorCode::AuditUnavailable, message)
         })
     }
+}
+
+/// Reads the most recent local audit records. Invalid or interrupted lines are
+/// ignored so a partial write never makes the audit timeline unavailable.
+pub fn read_jsonl_audit(path: impl AsRef<Path>, limit: usize) -> Result<Vec<ExecutionTrace>, RuntimeError> {
+    let path = path.as_ref();
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let file = std::fs::File::open(path).map_err(|_| {
+        RuntimeError::new(RuntimeErrorCode::AuditUnavailable, "无法读取本地审计文件")
+    })?;
+    let mut records = BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str::<ExecutionTrace>(&line).ok())
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| std::cmp::Reverse(record.started_at_unix_ms));
+    records.truncate(limit.clamp(1, 1_000));
+    Ok(records)
 }
 
 pub struct ExecutedJson {
@@ -590,5 +610,35 @@ mod tests {
         assert!(value.get("response").is_none());
         assert!(value.get("url").is_none());
         assert!(value.get("headers").is_none());
+    }
+
+    #[test]
+    fn reads_newest_audit_records_without_accepting_invalid_lines() {
+        let path = std::env::temp_dir().join(format!("apiarray-audit-{}.jsonl", unix_millis()));
+        let trace = ExecutionTrace {
+            schema_version: 1,
+            correlation_id: "req-audit".to_owned(),
+            publisher_id: "local".to_owned(),
+            public_model: "smart".to_owned(),
+            streaming: false,
+            started_at_unix_ms: 10,
+            total_latency_ms: 20,
+            first_byte_latency_ms: None,
+            result: TraceResult::Success,
+            final_error: None,
+            attempts: Vec::new(),
+            retry_count: 0,
+            failover_count: 0,
+            input_tokens: None,
+            output_tokens: None,
+            cached_input_tokens: None,
+            cache_hit: None,
+        };
+        std::fs::write(&path, format!("not-json\n{}\n", serde_json::to_string(&trace).expect("trace json")))
+            .expect("audit fixture");
+        let records = read_jsonl_audit(&path, 10).expect("records");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].correlation_id, "req-audit");
+        let _ = std::fs::remove_file(path);
     }
 }
