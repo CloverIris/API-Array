@@ -5,7 +5,8 @@ use crate::capability::CapabilityManifest;
 use crate::error::{CoreError, ErrorCode, ValidationIssue};
 use crate::graph::WorkflowGraph;
 use crate::health::{EndpointHealth, HealthObservation, HealthPolicy};
-use crate::provider::ProviderManifest;
+use crate::inspection::{InspectionFinding, InspectionReport, ProbeAuthorization, authorize_probe};
+use crate::provider::{ProbeDefinition, ProviderManifest};
 use crate::publisher::PublisherConfig;
 use crate::routing::{RouteCandidate, RoutePolicy, RouteRequest};
 use crate::runtime::{DispatchRequest, RuntimeConfig};
@@ -13,9 +14,11 @@ use crate::secret::SecretRef;
 use crate::secret::redact_diagnostic;
 use crate::stream::decode_stream_chunks;
 use crate::templates::{TemplateContext, generate_templates};
+use crate::workspace::{WorkspacePackage, load_workspace_json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CliRequest {
@@ -32,6 +35,10 @@ pub enum CliCommand {
     },
     ValidateGraph {
         graph: WorkflowGraph,
+    },
+    AnalyzeNodeImpact {
+        graph: WorkflowGraph,
+        node_id: String,
     },
     DecideRoute {
         policy: RoutePolicy,
@@ -79,6 +86,31 @@ pub enum CliCommand {
         state: EndpointHealth,
         policy: HealthPolicy,
         observation: HealthObservation,
+    },
+    AuthorizeProbe {
+        probe: ProbeDefinition,
+        #[serde(default)]
+        authorization: ProbeAuthorization,
+    },
+    BuildInspectionReport {
+        provider_id: String,
+        generated_at_unix_ms: u64,
+        findings: Vec<InspectionFinding>,
+        #[serde(default)]
+        last_success_at_unix_ms: Option<u64>,
+        #[serde(default)]
+        consecutive_failures: u32,
+    },
+    ExportWorkspace {
+        workspace: WorkspacePackage,
+    },
+    LoadWorkspace {
+        json: String,
+    },
+    WorkspaceSecretStatus {
+        workspace: WorkspacePackage,
+        #[serde(default)]
+        available_secret_refs: BTreeSet<String>,
     },
 }
 
@@ -141,6 +173,7 @@ pub fn parse_and_dispatch(line: &str) -> CliResponse {
 /// # Errors
 ///
 /// Schema 不受支持或对应核心操作校验失败时返回稳定的 [`CoreError`]。
+#[allow(clippy::too_many_lines)]
 pub fn dispatch(request: CliRequest) -> Result<CliResponse, CoreError> {
     if request.schema_version != SCHEMA_VERSION {
         return Err(CoreError::new(
@@ -163,6 +196,9 @@ pub fn dispatch(request: CliRequest) -> Result<CliResponse, CoreError> {
             })
         }
         CliCommand::ValidateGraph { graph } => serde_json::to_value(graph.validate()?)?,
+        CliCommand::AnalyzeNodeImpact { graph, node_id } => {
+            serde_json::to_value(graph.impact_of_node(&node_id)?)?
+        }
         CliCommand::DecideRoute {
             policy,
             request,
@@ -212,6 +248,34 @@ pub fn dispatch(request: CliRequest) -> Result<CliResponse, CoreError> {
             let change = state.observe(&policy, observation)?;
             json!({ "state": state, "change": change })
         }
+        CliCommand::AuthorizeProbe {
+            probe,
+            authorization,
+        } => {
+            authorize_probe(&probe, authorization)?;
+            json!({ "authorized": true, "probe_id": probe.id })
+        }
+        CliCommand::BuildInspectionReport {
+            provider_id,
+            generated_at_unix_ms,
+            findings,
+            last_success_at_unix_ms,
+            consecutive_failures,
+        } => serde_json::to_value(InspectionReport::build(
+            provider_id,
+            generated_at_unix_ms,
+            findings,
+            last_success_at_unix_ms,
+            consecutive_failures,
+        )?)?,
+        CliCommand::ExportWorkspace { workspace } => {
+            json!({ "json": workspace.export_json()? })
+        }
+        CliCommand::LoadWorkspace { json } => serde_json::to_value(load_workspace_json(&json)?)?,
+        CliCommand::WorkspaceSecretStatus {
+            workspace,
+            available_secret_refs,
+        } => serde_json::to_value(workspace.secret_status(&available_secret_refs))?,
     };
     Ok(CliResponse::success(result))
 }

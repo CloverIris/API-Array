@@ -52,10 +52,28 @@ pub fn parse_chat_completions_request(value: &Value) -> Result<CanonicalRequest,
         tools,
         tool_choice: parse_tool_choice(value.get("tool_choice"))?,
         response_format: parse_response_format(value.get("response_format"))?,
-        metadata: BTreeMap::new(),
+        metadata: parse_metadata(value.get("metadata"))?,
     };
     request.validate()?;
     Ok(request)
+}
+
+fn parse_metadata(value: Option<&Value>) -> Result<BTreeMap<String, String>, CoreError> {
+    let Some(value) = value else {
+        return Ok(BTreeMap::new());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| request_error("metadata 必须是字符串键值对象"))?;
+    object
+        .iter()
+        .map(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key.clone(), value.to_owned()))
+                .ok_or_else(|| request_error("metadata 的值必须是字符串"))
+        })
+        .collect()
 }
 
 /// 将统一非流式响应编码为 OpenAI-compatible Chat Completions 响应。
@@ -365,12 +383,17 @@ mod tests {
             "tools": [{"type": "function", "function": {
                 "name": "weather", "description": "weather", "parameters": {"type": "object"}
             }}],
-            "stream": true
+            "stream": true,
+            "metadata": {"tier": "premium"}
         }))?;
         assert_eq!(request.model, "smart");
         assert_eq!(request.messages[0].content.len(), 2);
         assert_eq!(request.tools.len(), 1);
         assert!(request.stream);
+        assert_eq!(
+            request.metadata.get("tier").map(String::as_str),
+            Some("premium")
+        );
         Ok(())
     }
 

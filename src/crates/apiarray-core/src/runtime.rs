@@ -53,6 +53,33 @@ pub struct UpstreamRoute {
     pub priority: u32,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default)]
+    pub conditions: Vec<RouteCondition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RouteCondition {
+    MetadataEquals { key: String, value: String },
+    MetadataPresent { key: String },
+}
+
+impl RouteCondition {
+    fn matches(&self, metadata: &BTreeMap<String, String>) -> bool {
+        match self {
+            Self::MetadataEquals { key, value } => metadata.get(key) == Some(value),
+            Self::MetadataPresent { key } => metadata.contains_key(key),
+        }
+    }
+
+    fn validate(&self) -> bool {
+        match self {
+            Self::MetadataEquals { key, value } => {
+                !key.trim().is_empty() && key.len() <= 64 && value.len() <= 256
+            }
+            Self::MetadataPresent { key } => !key.trim().is_empty() && key.len() <= 64,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +272,15 @@ impl RuntimeConfig {
                             "上游引用的 Provider Instance 不存在",
                         )),
                     }
+                    for (condition_index, condition) in upstream.conditions.iter().enumerate() {
+                        if !condition.validate() {
+                            issues.push(ValidationIssue::new(
+                                format!("{upstream_path}.conditions[{condition_index}]"),
+                                "INVALID_CONDITION",
+                                "简单路由条件的键值为空或超过长度限制",
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -324,7 +360,11 @@ impl CompiledRuntime {
             .map(|upstream| RouteCandidate {
                 id: upstream.id.clone(),
                 priority: upstream.priority,
-                enabled: upstream.enabled,
+                enabled: upstream.enabled
+                    && upstream
+                        .conditions
+                        .iter()
+                        .all(|condition| condition.matches(&dispatch.request.metadata)),
                 health: dispatch
                     .health
                     .get(&upstream.id)
@@ -464,6 +504,7 @@ mod tests {
                             upstream_model: "upstream-model".to_owned(),
                             priority: 0,
                             enabled: true,
+                            conditions: Vec::new(),
                         }],
                     }],
                 },

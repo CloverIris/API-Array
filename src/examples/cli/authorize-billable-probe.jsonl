@@ -1,0 +1,1 @@
+{"schema_version":1,"operation":"authorize_probe","probe":{"id":"minimal-generation","kind":"generation","side_effect":"billable","default_enabled":false},"authorization":{"allow_billable":true}}

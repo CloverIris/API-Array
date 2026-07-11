@@ -3,7 +3,8 @@ use apiarray_core::provider::ProviderManifest;
 use apiarray_core::publisher::PublisherConfig;
 use apiarray_core::routing::{HealthStatus, RoutePolicy, StandardError};
 use apiarray_core::runtime::{
-    DispatchRequest, ModelRoute, ProviderInstance, RuntimeConfig, RuntimePublisher, UpstreamRoute,
+    DispatchRequest, ModelRoute, ProviderInstance, RouteCondition, RuntimeConfig, RuntimePublisher,
+    UpstreamRoute,
 };
 use apiarray_core::secret::SecretRef;
 use std::collections::{BTreeMap, HashSet};
@@ -70,6 +71,7 @@ fn runtime_config() -> RuntimeConfig {
                             upstream_model: "primary-model".to_owned(),
                             priority: 0,
                             enabled: true,
+                            conditions: Vec::new(),
                         },
                         UpstreamRoute {
                             id: "backup-route".to_owned(),
@@ -77,6 +79,7 @@ fn runtime_config() -> RuntimeConfig {
                             upstream_model: "backup-model".to_owned(),
                             priority: 10,
                             enabled: true,
+                            conditions: Vec::new(),
                         },
                     ],
                 }],
@@ -160,4 +163,43 @@ fn compile_rejects_missing_required_secret() {
             .iter()
             .any(|issue| issue.code == "SECRET_REFERENCE_REQUIRED")
     );
+}
+
+#[test]
+fn metadata_condition_selects_only_matching_upstream() -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = runtime_config();
+    config
+        .publishers
+        .get_mut("local-ai")
+        .expect("publisher")
+        .routes[0]
+        .upstreams[0]
+        .conditions = vec![RouteCondition::MetadataEquals {
+        key: "tier".to_owned(),
+        value: "premium".to_owned(),
+    }];
+    let runtime = config.compile()?;
+
+    let without_metadata = runtime.plan_dispatch(&DispatchRequest {
+        publisher_id: "local-ai".to_owned(),
+        request: request(),
+        health: BTreeMap::new(),
+        excluded_upstreams: HashSet::new(),
+        previous_error: None,
+    })?;
+    assert_eq!(without_metadata.route.candidate_id, "backup-route");
+
+    let mut matching = request();
+    matching
+        .metadata
+        .insert("tier".to_owned(), "premium".to_owned());
+    let with_metadata = runtime.plan_dispatch(&DispatchRequest {
+        publisher_id: "local-ai".to_owned(),
+        request: matching,
+        health: BTreeMap::new(),
+        excluded_upstreams: HashSet::new(),
+        previous_error: None,
+    })?;
+    assert_eq!(with_metadata.route.candidate_id, "primary-route");
+    Ok(())
 }

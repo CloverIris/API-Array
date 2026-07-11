@@ -11,6 +11,7 @@ pub mod error;
 pub mod events;
 pub mod graph;
 pub mod health;
+pub mod inspection;
 pub mod openai;
 pub mod provider;
 pub mod publisher;
@@ -19,6 +20,7 @@ pub mod runtime;
 pub mod secret;
 pub mod stream;
 pub mod templates;
+pub mod workspace;
 
 pub use error::{CoreError, ErrorCode, ValidationIssue};
 

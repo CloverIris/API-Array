@@ -5,6 +5,7 @@
 pub mod env;
 pub mod error;
 pub mod publisher;
+pub mod resilience;
 pub mod secret;
 pub mod transport;
 

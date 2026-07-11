@@ -1,12 +1,12 @@
+use crate::resilience::{AuditSink, ExecutedStream, NoopAuditSink, ResilientExecutor, TraceResult};
 use crate::secret::SecretResolver;
 use crate::transport::HttpExecutor;
 use crate::{RuntimeError, RuntimeErrorCode};
-use apiarray_core::adapter::parse_response;
 use apiarray_core::openai::{
     OpenAiStreamEncoder, encode_chat_completions_response, parse_chat_completions_request,
 };
-use apiarray_core::routing::HealthStatus;
-use apiarray_core::runtime::{CompiledRuntime, DispatchRequest};
+use apiarray_core::routing::{HealthStatus, StandardError};
+use apiarray_core::runtime::CompiledRuntime;
 use apiarray_core::stream::{SseByteDecoder, StreamEvent, parse_protocol_frame};
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State, rejection::JsonRejection};
@@ -16,22 +16,22 @@ use axum::routing::post;
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Clone)]
 pub struct PublisherState {
     runtime: Arc<CompiledRuntime>,
     publisher_id: String,
-    executor: HttpExecutor,
     secrets: Arc<dyn SecretResolver>,
-    health: Arc<RwLock<BTreeMap<String, HealthStatus>>>,
+    executor: ResilientExecutor,
 }
 
 impl PublisherState {
@@ -42,17 +42,33 @@ impl PublisherState {
         executor: HttpExecutor,
         secrets: Arc<dyn SecretResolver>,
     ) -> Self {
+        Self::with_audit(
+            runtime,
+            publisher_id,
+            executor,
+            secrets,
+            Arc::new(NoopAuditSink),
+        )
+    }
+
+    #[must_use]
+    pub fn with_audit(
+        runtime: Arc<CompiledRuntime>,
+        publisher_id: impl Into<String>,
+        transport: HttpExecutor,
+        secrets: Arc<dyn SecretResolver>,
+        audit: Arc<dyn AuditSink>,
+    ) -> Self {
         Self {
             runtime,
             publisher_id: publisher_id.into(),
-            executor,
+            executor: ResilientExecutor::new(transport, Arc::clone(&secrets), audit),
             secrets,
-            health: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
     pub async fn set_health(&self, upstream_id: impl Into<String>, status: HealthStatus) {
-        self.health.write().await.insert(upstream_id.into(), status);
+        self.executor.set_health(upstream_id, status).await;
     }
 
     pub fn router(self) -> Router {
@@ -70,11 +86,11 @@ pub struct PublisherServer {
 }
 
 impl PublisherServer {
-    /// 按冻结安全策略绑定本地 Publisher。
+    /// 只按已验证的本地 Publisher 配置绑定监听地址。
     ///
     /// # Errors
     ///
-    /// Publisher 不存在、配置无效或本地端口绑定失败时返回错误。
+    /// Publisher 不存在、配置无效或端口绑定失败时返回错误。
     pub async fn bind(state: PublisherState) -> Result<Self, RuntimeError> {
         let config = state
             .runtime
@@ -110,11 +126,11 @@ impl PublisherServer {
         self.local_address
     }
 
-    /// 运行 Publisher，直到 Server 失败或任务被取消。
+    /// 运行 Publisher，直到 Server 退出。
     ///
     /// # Errors
     ///
-    /// Axum Server 退出并返回错误时返回安全错误。
+    /// Server 异常退出时返回安全错误。
     pub async fn serve(self) -> Result<(), RuntimeError> {
         axum::serve(self.listener, self.router).await.map_err(|_| {
             RuntimeError::new(
@@ -128,7 +144,7 @@ impl PublisherServer {
     ///
     /// # Errors
     ///
-    /// Axum Server 退出并返回错误时返回安全错误。
+    /// Server 异常退出时返回安全错误。
     pub async fn serve_with_shutdown<F>(self, shutdown: F) -> Result<(), RuntimeError>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -150,53 +166,63 @@ async fn chat_completions(
     headers: HeaderMap,
     payload: Result<Json<Value>, JsonRejection>,
 ) -> Response {
+    let request_id = correlation_id(&headers);
     if let Err(error) = authorize(&state, &headers) {
-        return runtime_error_response(error);
+        return with_correlation_id(runtime_error_response(error), &request_id);
     }
     let Ok(Json(payload)) = payload else {
-        return openai_error_response(
-            StatusCode::BAD_REQUEST,
-            "INVALID_REQUEST",
-            "请求正文不是有效 JSON",
+        return with_correlation_id(
+            openai_error_response(
+                StatusCode::BAD_REQUEST,
+                "INVALID_REQUEST",
+                "请求正文不是有效 JSON",
+            ),
+            &request_id,
         );
     };
     let request = match parse_chat_completions_request(&payload) {
         Ok(request) => request,
-        Err(error) => return runtime_error_response(error.into()),
-    };
-    let health = state.health.read().await.clone();
-    let plan = match state.runtime.plan_dispatch(&DispatchRequest {
-        publisher_id: state.publisher_id.clone(),
-        request: request.clone(),
-        health,
-        excluded_upstreams: HashSet::new(),
-        previous_error: None,
-    }) {
-        Ok(plan) => plan,
-        Err(error) => return runtime_error_response(error.into()),
+        Err(error) => {
+            return with_correlation_id(runtime_error_response(error.into()), &request_id);
+        }
     };
 
     if request.stream {
         match state
             .executor
-            .execute_stream(&plan.transport, state.secrets.as_ref())
+            .execute_stream(
+                &state.runtime,
+                &state.publisher_id,
+                request,
+                request_id.clone(),
+            )
             .await
         {
-            Ok(response) => stream_response(response, plan.transport.adapter, plan.public_model),
-            Err(error) => runtime_error_response(error),
+            Ok(executed) => with_correlation_id(
+                stream_response(executed, state.executor.clone()),
+                &request_id,
+            ),
+            Err(error) => with_correlation_id(runtime_error_response(error), &request_id),
         }
     } else {
         match state
             .executor
-            .execute_json(&plan.transport, state.secrets.as_ref())
+            .execute_json(
+                &state.runtime,
+                &state.publisher_id,
+                request,
+                request_id.clone(),
+            )
             .await
-            .and_then(|value| parse_response(plan.transport.adapter, &value).map_err(Into::into))
         {
-            Ok(mut response) => {
-                response.model = Some(plan.public_model);
-                Json(encode_chat_completions_response(&response)).into_response()
+            Ok(mut executed) => {
+                executed.response.model = Some(executed.public_model);
+                with_correlation_id(
+                    Json(encode_chat_completions_response(&executed.response)).into_response(),
+                    &request_id,
+                )
             }
-            Err(error) => runtime_error_response(error),
+            Err(error) => with_correlation_id(runtime_error_response(error), &request_id),
         }
     }
 }
@@ -235,56 +261,111 @@ fn authorize(state: &PublisherState, headers: &HeaderMap) -> Result<(), RuntimeE
     Ok(())
 }
 
-fn stream_response(
-    response: reqwest::Response,
-    adapter: apiarray_core::adapter::AdapterKind,
-    public_model: String,
-) -> Response {
+#[allow(clippy::too_many_lines)]
+fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Response {
+    let ExecutedStream {
+        response,
+        adapter,
+        public_model,
+        mut trace,
+    } = executed;
     let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(32);
     tokio::spawn(async move {
+        let stream_started = Instant::now();
         let mut upstream = response.bytes_stream();
         let mut decoder = SseByteDecoder::new();
         let mut encoder = OpenAiStreamEncoder::new("apiarray-stream", &public_model);
         let mut finished = false;
         while let Some(chunk) = upstream.next().await {
-            let result = match chunk {
+            let frames = match chunk {
                 Ok(bytes) => decoder.push(&bytes),
                 Err(_) => Err(apiarray_core::CoreError::new(
                     apiarray_core::ErrorCode::StreamInvalid,
                     "上游流读取失败",
                 )),
             };
-            let Ok(frames) = result else {
+            let Ok(frames) = frames else {
                 send_stream_error(&sender).await;
+                finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
                 return;
             };
             for frame in frames {
                 let Ok(events) = parse_protocol_frame(adapter, &frame) else {
                     send_stream_error(&sender).await;
+                    finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
                     return;
                 };
-                if !send_stream_events(&sender, &mut encoder, events, &public_model, &mut finished)
-                    .await
+                if !send_stream_events(
+                    &sender,
+                    &mut encoder,
+                    events,
+                    &public_model,
+                    &mut finished,
+                    &mut trace,
+                )
+                .await
                 {
+                    finish_trace(
+                        &executor,
+                        &mut trace,
+                        stream_started,
+                        TraceResult::ClientDisconnected,
+                    );
                     return;
                 }
             }
         }
-        if let Ok(Some(frame)) = decoder.finish()
-            && let Ok(events) = parse_protocol_frame(adapter, &frame)
-        {
-            let _ = send_stream_events(&sender, &mut encoder, events, &public_model, &mut finished)
-                .await;
+        match decoder.finish() {
+            Ok(Some(frame)) => {
+                let Ok(events) = parse_protocol_frame(adapter, &frame) else {
+                    send_stream_error(&sender).await;
+                    finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
+                    return;
+                };
+                if !send_stream_events(
+                    &sender,
+                    &mut encoder,
+                    events,
+                    &public_model,
+                    &mut finished,
+                    &mut trace,
+                )
+                .await
+                {
+                    finish_trace(
+                        &executor,
+                        &mut trace,
+                        stream_started,
+                        TraceResult::ClientDisconnected,
+                    );
+                    return;
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {
+                send_stream_error(&sender).await;
+                finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
+                return;
+            }
         }
-        if !finished {
-            let _ = send_encoded(
+        if !finished
+            && !send_encoded(
                 &sender,
                 encoder.encode(&StreamEvent::Finished {
                     reason: apiarray_core::canonical::FinishReason::Stop,
                 }),
             )
-            .await;
+            .await
+        {
+            finish_trace(
+                &executor,
+                &mut trace,
+                stream_started,
+                TraceResult::ClientDisconnected,
+            );
+            return;
         }
+        finish_trace(&executor, &mut trace, stream_started, TraceResult::Success);
     });
 
     Response::builder()
@@ -302,16 +383,37 @@ fn stream_response(
         })
 }
 
+fn finish_trace(
+    executor: &ResilientExecutor,
+    trace: &mut crate::resilience::ExecutionTrace,
+    started: Instant,
+    result: TraceResult,
+) {
+    trace.total_latency_ms = trace.total_latency_ms.saturating_add(elapsed_ms(started));
+    trace.result = result;
+    if result == TraceResult::Failure {
+        trace.final_error = Some(StandardError::InvalidResponse);
+    }
+    executor.record(trace);
+}
+
 async fn send_stream_events(
     sender: &mpsc::Sender<Result<Bytes, Infallible>>,
     encoder: &mut OpenAiStreamEncoder,
     events: Vec<StreamEvent>,
     public_model: &str,
     finished: &mut bool,
+    trace: &mut crate::resilience::ExecutionTrace,
 ) -> bool {
     for event in events {
         if *finished {
             continue;
+        }
+        if let StreamEvent::Usage { usage } = &event {
+            trace.input_tokens = Some(usage.input_tokens);
+            trace.output_tokens = Some(usage.output_tokens);
+            trace.cached_input_tokens = usage.cached_input_tokens;
+            trace.cache_hit = usage.cached_input_tokens.map(|tokens| tokens > 0);
         }
         let event = match event {
             StreamEvent::Started { response_id, .. } => StreamEvent::Started {
@@ -350,6 +452,37 @@ async fn send_stream_error(sender: &mpsc::Sender<Result<Bytes, Infallible>>) {
     let _ = sender.send(Ok(Bytes::from(frame))).await;
 }
 
+fn correlation_id(headers: &HeaderMap) -> String {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+        })
+        .map_or_else(
+            || format!("apiarray-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed)),
+            str::to_owned,
+        )
+}
+
+fn with_correlation_id(mut response: Response, correlation_id: &str) -> Response {
+    if let Ok(value) = correlation_id.parse() {
+        response
+            .headers_mut()
+            .insert("x-apiarray-request-id", value);
+    }
+    response
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 fn runtime_error_response(error: RuntimeError) -> Response {
     let RuntimeError {
         code, safe_message, ..
@@ -361,7 +494,8 @@ fn runtime_error_response(error: RuntimeError) -> Response {
         | RuntimeErrorCode::EnvironmentInvalid
         | RuntimeErrorCode::TransportBuildFailed
         | RuntimeErrorCode::PublisherBindFailed
-        | RuntimeErrorCode::PublisherServeFailed => StatusCode::INTERNAL_SERVER_ERROR,
+        | RuntimeErrorCode::PublisherServeFailed
+        | RuntimeErrorCode::AuditUnavailable => StatusCode::INTERNAL_SERVER_ERROR,
         RuntimeErrorCode::UpstreamFailed
         | RuntimeErrorCode::ResponseTooLarge
         | RuntimeErrorCode::ResponseInvalid => StatusCode::BAD_GATEWAY,
@@ -397,5 +531,14 @@ mod tests {
         assert!(constant_time_equal(b"same-token", b"same-token"));
         assert!(!constant_time_equal(b"same-token", b"same-tokem"));
         assert!(!constant_time_equal(b"short", b"shorter"));
+    }
+
+    #[test]
+    fn correlation_id_rejects_unsafe_input() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", "unsafe value".parse().expect("header"));
+        assert!(correlation_id(&headers).starts_with("apiarray-"));
+        headers.insert("x-request-id", "safe-id:1".parse().expect("header"));
+        assert_eq!(correlation_id(&headers), "safe-id:1");
     }
 }

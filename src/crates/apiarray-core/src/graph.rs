@@ -17,7 +17,7 @@ pub struct Node {
     pub id: String,
     pub name: String,
     pub kind: NodeKind,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub inputs: Vec<Port>,
@@ -76,6 +76,13 @@ pub struct GraphSummary {
     pub enabled_node_count: usize,
     pub publisher_count: usize,
     pub topological_order: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeImpact {
+    pub node_id: String,
+    pub downstream_nodes: Vec<String>,
+    pub affected_publishers: Vec<String>,
 }
 
 impl WorkflowGraph {
@@ -201,6 +208,54 @@ impl WorkflowGraph {
             ))
         }
     }
+
+    /// 计算禁用或删除节点会影响的下游节点与 Publisher。
+    ///
+    /// # Errors
+    ///
+    /// 图无效或目标节点不存在时返回错误。
+    pub fn impact_of_node(&self, node_id: &str) -> Result<NodeImpact, CoreError> {
+        self.validate()?;
+        if !self.nodes.iter().any(|node| node.id == node_id) {
+            return Err(CoreError::new(ErrorCode::GraphInvalid, "目标节点不存在"));
+        }
+        let mut outgoing: HashMap<&str, Vec<&str>> = HashMap::new();
+        for edge in &self.edges {
+            outgoing
+                .entry(edge.from.node.as_str())
+                .or_default()
+                .push(edge.to.node.as_str());
+        }
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::from([node_id]);
+        while let Some(current) = queue.pop_front() {
+            if let Some(targets) = outgoing.get(current) {
+                for target in targets {
+                    if visited.insert(*target) {
+                        queue.push_back(target);
+                    }
+                }
+            }
+        }
+        let mut downstream_nodes = visited.iter().map(ToString::to_string).collect::<Vec<_>>();
+        downstream_nodes.sort();
+        let mut affected_publishers = self
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Publisher && visited.contains(node.id.as_str()))
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        affected_publishers.sort();
+        Ok(NodeImpact {
+            node_id: node_id.to_owned(),
+            downstream_nodes,
+            affected_publishers,
+        })
+    }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 fn validate_ports(
@@ -333,5 +388,31 @@ mod tests {
                 .iter()
                 .any(|issue| issue.code == "CYCLE_DETECTED")
         );
+    }
+
+    #[test]
+    fn reports_downstream_publisher_impact() -> Result<(), CoreError> {
+        let graph = WorkflowGraph {
+            schema_version: 1,
+            id: "main".to_owned(),
+            nodes: vec![
+                node("adapter", NodeKind::Adapter),
+                node("publisher", NodeKind::Publisher),
+            ],
+            edges: vec![Edge {
+                id: "publish".to_owned(),
+                from: Endpoint {
+                    node: "adapter".to_owned(),
+                    port: "request_out".to_owned(),
+                },
+                to: Endpoint {
+                    node: "publisher".to_owned(),
+                    port: "request_in".to_owned(),
+                },
+            }],
+        };
+        let impact = graph.impact_of_node("adapter")?;
+        assert_eq!(impact.affected_publishers, ["publisher"]);
+        Ok(())
     }
 }

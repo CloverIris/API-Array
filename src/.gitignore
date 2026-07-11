@@ -2,4 +2,5 @@
 /.env
 /.env.*
 !/.env.example
+/runtime-audit.jsonl
 

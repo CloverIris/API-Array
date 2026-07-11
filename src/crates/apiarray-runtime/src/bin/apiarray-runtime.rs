@@ -1,6 +1,7 @@
 use apiarray_core::runtime::RuntimeConfig;
 use apiarray_runtime::env::{expand_env_placeholders, load_dotenv_optional};
 use apiarray_runtime::publisher::{PublisherServer, PublisherState};
+use apiarray_runtime::resilience::JsonlAuditSink;
 use apiarray_runtime::secret::EnvironmentSecretResolver;
 use apiarray_runtime::transport::{HttpExecutor, TransportConfig};
 use serde::Deserialize;
@@ -54,7 +55,10 @@ async fn run() -> Result<(), String> {
     let executor = HttpExecutor::new(TransportConfig::default())
         .map_err(|_| "HTTP_CLIENT_INIT_FAILED".to_owned())?;
     let secrets = Arc::new(EnvironmentSecretResolver::new(launch.secret_env));
-    let state = PublisherState::new(runtime, &launch.publisher_id, executor, secrets);
+    let audit = Arc::new(
+        JsonlAuditSink::open("runtime-audit.jsonl").map_err(|_| "AUDIT_OPEN_FAILED".to_owned())?,
+    );
+    let state = PublisherState::with_audit(runtime, &launch.publisher_id, executor, secrets, audit);
     let server = PublisherServer::bind(state)
         .await
         .map_err(|_| "PUBLISHER_BIND_FAILED".to_owned())?;

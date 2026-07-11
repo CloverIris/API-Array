@@ -17,6 +17,7 @@ pub enum RuntimeErrorCode {
     PublisherUnauthorized,
     PublisherBindFailed,
     PublisherServeFailed,
+    AuditUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

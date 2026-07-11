@@ -207,6 +207,15 @@ impl CanonicalRequest {
                 ));
             }
         }
+        for (key, value) in &self.metadata {
+            if key.trim().is_empty() || key.len() > 64 || value.len() > 256 {
+                issues.push(ValidationIssue::new(
+                    format!("metadata.{key}"),
+                    "OUT_OF_RANGE",
+                    "路由元数据键不能为空且键值长度必须受限",
+                ));
+            }
+        }
         if issues.is_empty() {
             Ok(())
         } else {
