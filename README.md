@@ -2,7 +2,7 @@
 
 API ARRAY 是一个面向 Windows 10/11 的本地优先 API 控制平面。它帮助个人开发者和小型组织安全管理多个 AI API，通过可视化节点编排完成能力探测、协议归一化、路由、故障切换、审计与本地高性能发布，并为发布后的能力生成可直接运行的活文档和多语言调用模板。
 
-当前项目处于产品设计冻结阶段，尚未开始代码实现。
+当前项目已完成产品设计冻结，进入 V0.2 Rust Core 可行性原型阶段。Tauri 与正式 UI 尚未开始开发，当前核心可以通过独立 CLI 编译、测试和调试。
 
 ## 仓库结构
 
@@ -17,7 +17,26 @@ APIArray/
 
 - 产品设计基线：[API ARRAY 产品设计文档 V0.1](docs/API_ARRAY_产品设计文档_V0.1.md)
 - Rust Core 开发约定：[src/AGENTS.md](src/AGENTS.md)
-- 状态：已冻结
+- 产品设计状态：V0.1 已冻结
+- 开发状态：V0.2 Rust Core 原型
 - 许可证方向：MIT
 
 “冻结”表示本文档中的产品边界可作为首版设计和实现依据。任何改变冻结项的提案都应记录变更原因、影响范围和新的版本号。
+
+## Rust Core
+
+当前 Rust Core 已包含 Provider YAML、统一请求与响应模型、OpenAI/Anthropic/Gemini Adapter、SSE 解析、工作流与路由、Runtime 配置编译、健康状态、Publisher 安全约束、活文档模板和 JSON Lines CLI。
+
+在 PowerShell 中执行完整验证：
+
+```powershell
+cd src
+.\scripts\Test-Core.ps1
+```
+
+通过 stdin 文件调试完整 Dispatch 计划：
+
+```powershell
+cd src
+.\scripts\Run-Cli.ps1 -InputFile .\examples\cli\plan-dispatch.jsonl
+```

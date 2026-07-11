@@ -1,13 +1,21 @@
 use crate::SCHEMA_VERSION;
+use crate::adapter::{AdapterKind, build_transport_plan, classify_http_error, parse_response};
+use crate::canonical::CanonicalRequest;
 use crate::capability::CapabilityManifest;
 use crate::error::{CoreError, ErrorCode, ValidationIssue};
 use crate::graph::WorkflowGraph;
+use crate::health::{EndpointHealth, HealthObservation, HealthPolicy};
 use crate::provider::ProviderManifest;
 use crate::publisher::PublisherConfig;
 use crate::routing::{RouteCandidate, RoutePolicy, RouteRequest};
+use crate::runtime::{DispatchRequest, RuntimeConfig};
+use crate::secret::SecretRef;
 use crate::secret::redact_diagnostic;
+use crate::stream::decode_stream_chunks;
+use crate::templates::{TemplateContext, generate_templates};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CliRequest {
@@ -39,6 +47,38 @@ pub enum CliCommand {
     },
     RedactDiagnostic {
         value: String,
+    },
+    BuildTransportPlan {
+        provider_yaml: String,
+        secret_refs: BTreeMap<String, String>,
+        request: CanonicalRequest,
+    },
+    ParseResponse {
+        adapter: AdapterKind,
+        response: Value,
+    },
+    DecodeStream {
+        adapter: AdapterKind,
+        chunks: Vec<String>,
+    },
+    ClassifyHttpError {
+        status: u16,
+        body: Value,
+    },
+    GenerateTemplates {
+        context: TemplateContext,
+    },
+    CompileRuntime {
+        config: RuntimeConfig,
+    },
+    PlanDispatch {
+        config: RuntimeConfig,
+        dispatch: DispatchRequest,
+    },
+    ObserveHealth {
+        state: EndpointHealth,
+        policy: HealthPolicy,
+        observation: HealthObservation,
     },
 }
 
@@ -136,6 +176,42 @@ pub fn dispatch(request: CliRequest) -> Result<CliResponse, CoreError> {
         CliCommand::RedactDiagnostic { value } => {
             json!({ "redacted": redact_diagnostic(&value) })
         }
+        CliCommand::BuildTransportPlan {
+            provider_yaml,
+            secret_refs,
+            request,
+        } => {
+            let provider = ProviderManifest::from_yaml(&provider_yaml)?;
+            let refs = secret_refs
+                .into_iter()
+                .map(|(field, reference)| Ok((field, SecretRef::parse(reference)?)))
+                .collect::<Result<BTreeMap<_, _>, CoreError>>()?;
+            serde_json::to_value(build_transport_plan(&provider, &refs, &request)?)?
+        }
+        CliCommand::ParseResponse { adapter, response } => {
+            serde_json::to_value(parse_response(adapter, &response)?)?
+        }
+        CliCommand::DecodeStream { adapter, chunks } => {
+            serde_json::to_value(decode_stream_chunks(adapter, &chunks)?)?
+        }
+        CliCommand::ClassifyHttpError { status, body } => {
+            serde_json::to_value(classify_http_error(status, &body))?
+        }
+        CliCommand::GenerateTemplates { context } => {
+            serde_json::to_value(generate_templates(&context)?)?
+        }
+        CliCommand::CompileRuntime { config } => serde_json::to_value(config.compile()?.summary())?,
+        CliCommand::PlanDispatch { config, dispatch } => {
+            serde_json::to_value(config.compile()?.plan_dispatch(&dispatch)?)?
+        }
+        CliCommand::ObserveHealth {
+            mut state,
+            policy,
+            observation,
+        } => {
+            let change = state.observe(&policy, observation)?;
+            json!({ "state": state, "change": change })
+        }
     };
     Ok(CliResponse::success(result))
 }
@@ -167,5 +243,29 @@ mod tests {
         );
         assert!(response.ok);
         assert_eq!(response.result.expect("result")["redacted"], "[REDACTED]");
+    }
+
+    #[test]
+    fn template_command_returns_eight_languages() {
+        let response = parse_and_dispatch(
+            r#"{"schema_version":1,"operation":"generate_templates","context":{"base_url":"http://127.0.0.1:6188/v1","model":"smart","stream":false}}"#,
+        );
+        assert!(response.ok);
+        assert_eq!(
+            response.result.expect("result").as_array().map(Vec::len),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn observe_health_command_returns_transition() {
+        let response = parse_and_dispatch(
+            r#"{"schema_version":1,"operation":"observe_health","state":{"status":"unknown","consecutive_successes":0,"consecutive_failures":0,"last_latency_ms":null,"last_error":null,"observation_count":0},"policy":{"schema_version":1,"failure_threshold":3,"recovery_threshold":2,"degraded_latency_ms":10000},"observation":{"success":true,"latency_ms":20,"error":null}}"#,
+        );
+        assert!(response.ok);
+        assert_eq!(
+            response.result.expect("result")["state"]["status"],
+            "healthy"
+        );
     }
 }

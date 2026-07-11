@@ -1,0 +1,2 @@
+{"schema_version":1,"operation":"observe_health","state":{"status":"unknown","consecutive_successes":0,"consecutive_failures":0,"last_latency_ms":null,"last_error":null,"observation_count":0},"policy":{"schema_version":1,"failure_threshold":3,"recovery_threshold":2,"degraded_latency_ms":10000},"observation":{"success":false,"latency_ms":30000,"error":"PROVIDER_TIMEOUT"}}
+

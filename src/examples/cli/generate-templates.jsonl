@@ -1,0 +1,2 @@
+{"schema_version":1,"operation":"generate_templates","context":{"base_url":"http://127.0.0.1:6188/v1","model":"smart","stream":false,"token_placeholder":"<API_ARRAY_TOKEN>"}}
+

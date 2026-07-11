@@ -1,10 +1,10 @@
 use crate::{CoreError, ErrorCode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 const SECRET_PREFIX: &str = "secret://";
 
 /// 工作区中可序列化的 Secret 引用。它永远不保存 Secret 值。
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct SecretRef(String);
 
@@ -40,6 +40,16 @@ impl SecretRef {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -91,6 +101,7 @@ mod tests {
     #[test]
     fn rejects_plain_secret_value() {
         assert!(SecretRef::parse("sk-not-a-reference").is_err());
+        assert!(serde_json::from_str::<SecretRef>(r#""plain-text-secret""#).is_err());
     }
 
     #[test]

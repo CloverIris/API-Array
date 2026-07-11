@@ -3,15 +3,21 @@
 //! 这个 crate 不依赖 Tauri 或任何 UI 运行环境，可以被 CLI、桌面宿主和未来的
 //! 无头 Runtime 复用。
 
+pub mod adapter;
+pub mod canonical;
 pub mod capability;
 pub mod cli;
 pub mod error;
 pub mod events;
 pub mod graph;
+pub mod health;
 pub mod provider;
 pub mod publisher;
 pub mod routing;
+pub mod runtime;
 pub mod secret;
+pub mod stream;
+pub mod templates;
 
 pub use error::{CoreError, ErrorCode, ValidationIssue};
 

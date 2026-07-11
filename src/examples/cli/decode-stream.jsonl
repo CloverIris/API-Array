@@ -1,0 +1,2 @@
+{"schema_version":1,"operation":"decode_stream","adapter":"openai-compatible","chunks":["data: {\"id\":\"r1\",\"model\":\"smart\",\"choices\":[{\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n","data: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"]}
+

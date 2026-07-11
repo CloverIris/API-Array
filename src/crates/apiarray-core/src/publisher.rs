@@ -1,3 +1,4 @@
+use crate::secret::SecretRef;
 use crate::{CoreError, ErrorCode, SCHEMA_VERSION, ValidationIssue};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -14,7 +15,7 @@ pub struct PublisherConfig {
     pub base_path: String,
     #[serde(default = "default_true")]
     pub require_token: bool,
-    pub token_ref: Option<String>,
+    pub token_ref: Option<SecretRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,15 +81,12 @@ impl PublisherConfig {
                 "Base Path 必须是安全的绝对 URL Path",
             ));
         }
-        if self.require_token {
-            match self.token_ref.as_deref() {
-                Some(value) if value.starts_with("secret://") => {}
-                _ => issues.push(ValidationIssue::new(
-                    "token_ref",
-                    "SECRET_REFERENCE_REQUIRED",
-                    "启用鉴权时必须使用 secret:// 引用",
-                )),
-            }
+        if self.require_token && self.token_ref.is_none() {
+            issues.push(ValidationIssue::new(
+                "token_ref",
+                "SECRET_REFERENCE_REQUIRED",
+                "启用鉴权时必须使用 secret:// 引用",
+            ));
         }
 
         if issues.is_empty() {
@@ -142,7 +140,7 @@ mod tests {
             port: 6188,
             base_path: "/v1".to_owned(),
             require_token: true,
-            token_ref: Some("secret://publisher/local-ai".to_owned()),
+            token_ref: Some(SecretRef::parse("secret://publisher/local-ai")?),
         }
         .validate()?;
         assert_eq!(summary.base_url, "http://127.0.0.1:6188/v1");
@@ -159,7 +157,9 @@ mod tests {
             port: 6188,
             base_path: "/v1".to_owned(),
             require_token: true,
-            token_ref: Some("secret://publisher/public".to_owned()),
+            token_ref: Some(
+                SecretRef::parse("secret://publisher/public").expect("valid secret ref"),
+            ),
         };
         let error = config.validate().expect_err("public bind must fail");
         assert!(

@@ -249,6 +249,16 @@ impl ProviderManifest {
                     "Header Secret 必须声明 Header 名称",
                 ));
             }
+            if matches!(self.authentication.kind, AuthenticationType::QuerySecret)
+                && field.secret
+                && field.query.is_none()
+            {
+                issues.push(ValidationIssue::new(
+                    format!("{path}.query"),
+                    "REQUIRED",
+                    "Query Secret 必须声明 Query 参数名称",
+                ));
+            }
         }
 
         let mut probe_ids = HashSet::new();
