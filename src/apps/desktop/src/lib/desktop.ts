@@ -81,6 +81,31 @@ export interface CodeTemplate {
   code: string;
 }
 
+export interface WalletCard {
+  id: string;
+  providerId: string;
+  providerInstanceId: string | null;
+  name: string;
+  configured: boolean;
+  enabled: boolean;
+  source: "catalog" | "asset" | string;
+  budgetMicros: number | null;
+  currency: string | null;
+  requestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostMicros: number | null;
+}
+
+export interface ProjectTree {
+  projects: Record<string, {
+    id: string;
+    name: string;
+    folders: Record<string, { id: string; name: string; canvasIds: string[] }>;
+    canvases: Record<string, { id: string; name: string; folderId: string | null; graph?: WorkflowGraph; appliedGraph?: WorkflowGraph | null; draftRevision: number; appliedRevision: number; publisherId: string | null; legacyMultiOutput: boolean }>;
+  }>;
+}
+
 export interface WorkflowGraph {
   schema_version: number;
   id: string;
@@ -96,8 +121,10 @@ export interface WorkflowGraph {
   edges: Array<{ id: string; from: { node: string; port: string }; to: { node: string; port: string } }>;
 }
 
+export type CanvasTab = "overview" | "workflow" | "routes" | "publisher" | "docs" | "runs";
+
 export interface WorkspaceUiState {
-  schemaVersion: 2;
+  schemaVersion: 3;
   themePreference: ThemePreference;
   viewMode: ViewMode;
   lastPage: string;
@@ -114,6 +141,30 @@ export interface WorkspaceUiState {
     nodePositions: Record<string, { x: number; y: number }>;
     collapsedGroups: string[];
   }>;
+  selectedProjectId: string | null;
+  selectedCanvasId: string | null;
+  expandedProjectIds: string[];
+  expandedFolderIds: string[];
+  canvasTabs: Record<string, CanvasTab>;
+}
+
+export interface CanvasSnapshot {
+  projectId: string;
+  projectName: string;
+  canvas: {
+    id: string;
+    name: string;
+    folderId: string | null;
+    graph: WorkflowGraph;
+    appliedGraph: WorkflowGraph | null;
+    draftRevision: number;
+    appliedRevision: number;
+    publisherId: string | null;
+    legacyMultiOutput: boolean;
+  };
+  publisher: null | { id: string; status: PublisherLifecycle; message: string | null; baseUrl: string; publicModels: string[] };
+  providerInstanceIds: string[];
+  missingSecretCount: number;
 }
 
 export type ThemePreference = "system" | "light" | "dark";
@@ -166,6 +217,29 @@ export interface ExecutionTrace {
 }
 
 export const getProviderCatalog = () => invoke<ProviderCatalogItem[]>("provider_catalog");
+export const getWalletGallery = () => invoke<WalletCard[]>("wallet_gallery");
+export const createWalletAsset = (input: { providerId: string; name: string; endpointOverride?: string; monthlyBudgetMicros?: number; currency?: string }) => invoke<WalletCard>("create_wallet_asset", { input });
+export const getProjectTree = () => invoke<{ projects: ProjectTree }>("project_tree").then((result) => result.projects);
+export const createProject = (name: string) => invoke<{ projects: ProjectTree }>("create_project", { input: { name } }).then((result) => result.projects);
+export const renameProject = (projectId: string, name: string) => invoke<{ projects: ProjectTree }>("rename_project", { input: { projectId, name } }).then((result) => result.projects);
+export const deleteProject = (projectId: string) => invoke<{ projects: ProjectTree }>("delete_project", { input: { projectId } }).then((result) => result.projects);
+export const createFolder = (projectId: string, name: string) => invoke<{ projects: ProjectTree }>("create_folder", { input: { projectId, name } }).then((result) => result.projects);
+export const renameFolder = (projectId: string, folderId: string, name: string) => invoke<{ projects: ProjectTree }>("rename_folder", { input: { projectId, folderId, name } }).then((result) => result.projects);
+export const deleteFolder = (projectId: string, folderId: string) => invoke<{ projects: ProjectTree }>("delete_folder", { input: { projectId, folderId } }).then((result) => result.projects);
+export const createCanvas = (projectId: string, folderId: string | undefined, name: string) => invoke<{ projects: ProjectTree }>("create_canvas", { input: { projectId, folderId, name } }).then((result) => result.projects);
+export const renameCanvas = (projectId: string, canvasId: string, name: string) => invoke<{ projects: ProjectTree }>("rename_canvas", { input: { projectId, canvasId, name } }).then((result) => result.projects);
+export const moveCanvas = (projectId: string, canvasId: string, folderId?: string) => invoke<{ projects: ProjectTree }>("move_canvas", { input: { projectId, canvasId, folderId } }).then((result) => result.projects);
+export const duplicateCanvas = (projectId: string, canvasId: string) => invoke<{ projects: ProjectTree }>("duplicate_canvas", { input: { projectId, canvasId } }).then((result) => result.projects);
+export const getCanvasGraph = (projectId: string, canvasId: string) => invoke<WorkflowGraph>("canvas_graph", { input: { projectId, canvasId } });
+export const getCanvasSnapshot = (projectId: string, canvasId: string) => invoke<CanvasSnapshot>("canvas_snapshot", { input: { projectId, canvasId } });
+export const saveCanvasGraph = (projectId: string, canvasId: string, graph: WorkflowGraph) => invoke<CanvasSnapshot>("save_canvas_graph", { input: { projectId, canvasId, graph } });
+export const getCanvasNodeImpact = (projectId: string, canvasId: string, nodeId: string) => invoke<WorkflowNodeImpact>("canvas_node_impact", { input: { projectId, canvasId }, nodeId });
+export const commitWalletPlacement = (projectId: string, canvasId: string, assetId: string) => invoke<{ projects: ProjectTree }>("commit_wallet_placement", { input: { projectId, canvasId, assetId } }).then((result) => result.projects);
+export const runCanvas = (projectId: string, canvasId: string) => invoke<DesktopSnapshot>("run_canvas", { input: { projectId, canvasId } });
+export const pauseCanvas = (projectId: string, canvasId: string) => invoke<DesktopSnapshot>("pause_canvas", { input: { projectId, canvasId } });
+export const stopCanvas = (projectId: string, canvasId: string) => invoke<DesktopSnapshot>("stop_canvas", { input: { projectId, canvasId } });
+export const refreshCanvas = (projectId: string, canvasId: string) => invoke<{ projects: ProjectTree }>("refresh_canvas", { input: { projectId, canvasId } }).then((result) => result.projects);
+export const deleteCanvas = (projectId: string, canvasId: string) => invoke<{ projects: ProjectTree }>("delete_canvas", { input: { projectId, canvasId } }).then((result) => result.projects);
 export const getProviderInstances = () => invoke<ProviderInstanceItem[]>("provider_instances");
 export const validateProviderYaml = (yaml: string) =>
   invoke<{ valid: boolean; providerId?: string; name?: string; adapter?: string; error?: string }>("validate_provider_yaml", { input: { yaml } });
@@ -193,7 +267,9 @@ export const getInspectionReport = (providerId: string) =>
   invoke<InspectionReport | null>("inspection_report", { providerId });
 export const pauseProviderProbe = (providerId: string, paused: boolean) =>
   invoke<void>("pause_provider_probe", { input: { providerId, paused } });
-export const createPublisher = (input: {
+export const createCanvasPublisher = (input: {
+  projectId: string;
+  canvasId: string;
   id: string;
   name: string;
   providerInstance: string;
@@ -204,7 +280,7 @@ export const createPublisher = (input: {
   token: string;
   timeoutMs?: number;
   maxRetries?: number;
-}) => invoke<DesktopSnapshot>("create_publisher", { input });
+}) => invoke<DesktopSnapshot>("create_canvas_publisher", { input });
 export const removePublisher = (publisherId: string) => invoke<DesktopSnapshot>("delete_publisher", { publisherId });
 export const getPublisherPreview = (publisherId: string) => invoke<{ id: string; baseUrl: string; loopbackOnly: boolean; authenticationEnabled: boolean }>("publisher_preview", { publisherId });
 export const getPublisherTemplates = (publisherId: string) => invoke<CodeTemplate[]>("publisher_templates", { publisherId });

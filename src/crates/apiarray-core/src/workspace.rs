@@ -1,10 +1,16 @@
 use crate::graph::WorkflowGraph;
 use crate::runtime::RuntimeConfig;
 use crate::secret::SecretRef;
-use crate::{CoreError, ErrorCode, SCHEMA_VERSION, ValidationIssue};
+use crate::{CoreError, ErrorCode, ValidationIssue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+
+/// Workspace packages evolve independently from Provider and graph schemas.
+///
+/// Provider manifests and runtime graphs deliberately remain on Core schema V1;
+/// changing the desktop workspace layout must not invalidate a provider YAML.
+pub const WORKSPACE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspacePackage {
@@ -15,10 +21,115 @@ pub struct WorkspacePackage {
     #[serde(default)]
     pub runtime_state: WorkspaceRuntimeState,
     pub graph: WorkflowGraph,
+    /// Workspace-scoped API wallet. It only keeps references to provider
+    /// instances and never owns a plaintext credential.
+    #[serde(default)]
+    pub wallet: ApiWallet,
+    /// Projects and canvases are the desktop composition model. `graph` stays
+    /// as the preserved legacy graph so V1 imports are lossless.
+    #[serde(default)]
+    pub projects: WorkspaceProjects,
     #[serde(default)]
     pub ui: Value,
     #[serde(default)]
     pub templates: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ApiWallet {
+    #[serde(default)]
+    pub assets: BTreeMap<String, ApiAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApiAsset {
+    pub id: String,
+    pub provider_instance_id: String,
+    pub provider_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub billing: BillingPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BillingPolicy {
+    #[serde(default)]
+    pub monthly_budget_micros: Option<u64>,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub rules: Vec<PricingRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PricingRule {
+    pub model_pattern: String,
+    /// Micro-units of the configured currency per one million tokens.
+    pub input_per_million_micros: u64,
+    #[serde(default)]
+    pub cached_input_per_million_micros: Option<u64>,
+    pub output_per_million_micros: u64,
+    pub source: PricingRuleSource,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PricingRuleSource {
+    Builtin,
+    User,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceProjects {
+    #[serde(default)]
+    pub projects: BTreeMap<String, Project>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub folders: BTreeMap<String, ProjectFolder>,
+    #[serde(default)]
+    pub canvases: BTreeMap<String, Canvas>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFolder {
+    pub id: String,
+    pub name: String,
+    #[serde(default, alias = "canvas_ids")]
+    pub canvas_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Canvas {
+    pub id: String,
+    pub name: String,
+    #[serde(default, alias = "folder_id")]
+    pub folder_id: Option<String>,
+    pub graph: WorkflowGraph,
+    #[serde(default, alias = "applied_graph")]
+    pub applied_graph: Option<WorkflowGraph>,
+    #[serde(default = "default_revision", alias = "draft_revision")]
+    pub draft_revision: u64,
+    #[serde(default, alias = "applied_revision")]
+    pub applied_revision: u64,
+    #[serde(default, alias = "publisher_id")]
+    pub publisher_id: Option<String>,
+    /// V1 imports may contain more than one Publisher. Preserve them instead
+    /// of silently rewriting a user graph; new canvases always have one.
+    #[serde(default, alias = "legacy_multi_output")]
+    pub legacy_multi_output: bool,
+}
+
+const fn default_revision() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -55,7 +166,7 @@ impl WorkspacePackage {
     /// 工作区字段、Runtime、Graph 或敏感数据扫描失败时返回错误。
     pub fn validate(&self) -> Result<(), CoreError> {
         let mut issues = Vec::new();
-        if self.schema_version != SCHEMA_VERSION {
+        if self.schema_version != WORKSPACE_SCHEMA_VERSION {
             issues.push(ValidationIssue::new(
                 "schema_version",
                 "UNSUPPORTED_SCHEMA",
@@ -93,6 +204,50 @@ impl WorkspacePackage {
         }
         if let Err(error) = self.graph.validate() {
             append_issues(&mut issues, "graph", error);
+        }
+        for (asset_id, asset) in &self.wallet.assets {
+            if asset_id != &asset.id || asset.id.trim().is_empty() {
+                issues.push(ValidationIssue::new(format!("wallet.assets.{asset_id}.id"), "KEY_MISMATCH", "API wallet asset ID must match its map key"));
+            }
+            if !self.runtime.providers.contains_key(&asset.provider_instance_id) {
+                issues.push(ValidationIssue::new(format!("wallet.assets.{asset_id}.provider_instance_id"), "PROVIDER_NOT_FOUND", "API wallet asset references an unknown Provider instance"));
+            }
+            if asset.name.trim().is_empty() {
+                issues.push(ValidationIssue::new(format!("wallet.assets.{asset_id}.name"), "REQUIRED", "API wallet asset name is required"));
+            }
+        }
+        for (project_id, project) in &self.projects.projects {
+            if project_id != &project.id || project.name.trim().is_empty() {
+                issues.push(ValidationIssue::new(format!("projects.projects.{project_id}"), "PROJECT_INVALID", "Project ID and name must be valid"));
+            }
+            for (folder_id, folder) in &project.folders {
+                if folder_id != &folder.id || folder.name.trim().is_empty() {
+                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.folders.{folder_id}"), "FOLDER_INVALID", "Folder ID and name must be valid"));
+                }
+                for canvas_id in &folder.canvas_ids {
+                    if !project.canvases.contains_key(canvas_id) {
+                        issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.folders.{folder_id}.canvas_ids"), "CANVAS_NOT_FOUND", "Folder references an unknown canvas"));
+                    }
+                }
+            }
+            for (canvas_id, canvas) in &project.canvases {
+                if canvas_id != &canvas.id || canvas.name.trim().is_empty() {
+                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}"), "CANVAS_INVALID", "Canvas ID and name must be valid"));
+                }
+                if let Some(folder_id) = &canvas.folder_id && !project.folders.contains_key(folder_id) {
+                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.folder_id"), "FOLDER_NOT_FOUND", "Canvas references an unknown folder"));
+                }
+                if let Err(error) = canvas.graph.validate() {
+                    append_issues(&mut issues, &format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), error);
+                }
+                let publisher_nodes = canvas.graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Publisher).count();
+                if !canvas.legacy_multi_output && publisher_nodes != 1 {
+                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), "CANVAS_OUTPUT_REQUIRED", "New canvases must contain exactly one total Publisher output"));
+                }
+                if let Some(publisher_id) = &canvas.publisher_id && !self.runtime.publishers.contains_key(publisher_id) {
+                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.publisher_id"), "PUBLISHER_NOT_FOUND", "Canvas references an unknown Publisher"));
+                }
+            }
         }
         let value = serde_json::to_value(self)?;
         scan_sensitive_value(&value, "$", None, &mut issues);
@@ -198,18 +353,88 @@ pub fn load_workspace_json(input: &str) -> Result<WorkspaceLoad, CoreError> {
         .and_then(Value::as_u64)
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| CoreError::new(ErrorCode::UnsupportedSchema, "工作区缺少 Schema 版本"))?;
-    if schema_version != SCHEMA_VERSION {
+    if schema_version > WORKSPACE_SCHEMA_VERSION || schema_version == 0 {
         return Ok(WorkspaceLoad::ReadOnly {
             schema_version,
-            reason: format!("当前只支持工作区 Schema {SCHEMA_VERSION}，该文件以只读方式打开"),
+            reason: format!("当前支持工作区 Schema {WORKSPACE_SCHEMA_VERSION}，该文件以只读方式打开"),
             raw,
         });
     }
-    let workspace: WorkspacePackage = serde_json::from_value(raw)?;
+    let workspace: WorkspacePackage = if schema_version == 1 {
+        migrate_workspace_v1(raw)?
+    } else if schema_version == 2 {
+        migrate_workspace_v2(raw)?
+    } else {
+        serde_json::from_value(raw)?
+    };
     workspace.validate()?;
     Ok(WorkspaceLoad::Ready {
         workspace: Box::new(workspace),
     })
+}
+
+fn migrate_workspace_v1(mut raw: Value) -> Result<WorkspacePackage, CoreError> {
+    let graph: WorkflowGraph = serde_json::from_value(raw.get("graph").cloned().ok_or_else(|| CoreError::new(ErrorCode::InvalidInput, "V1 workspace is missing graph"))?)?;
+    let publisher_ids = raw.pointer("/runtime/publishers").and_then(Value::as_object).map(|publishers| publishers.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    let legacy_multi_output = graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Publisher).count() != 1;
+    let canvas = Canvas {
+        id: "legacy-main".to_owned(),
+        name: "Imported main canvas".to_owned(),
+        folder_id: Some("default".to_owned()),
+        graph,
+        applied_graph: None,
+        draft_revision: 1,
+        applied_revision: 0,
+        publisher_id: publisher_ids.first().cloned(),
+        legacy_multi_output,
+    };
+    let project = Project {
+        id: "default".to_owned(),
+        name: "Default project".to_owned(),
+        folders: BTreeMap::from([("default".to_owned(), ProjectFolder { id: "default".to_owned(), name: "Canvases".to_owned(), canvas_ids: vec![canvas.id.clone()] })]),
+        canvases: BTreeMap::from([(canvas.id.clone(), canvas)]),
+    };
+    let assets = raw.pointer("/runtime/providers").and_then(Value::as_object).map(|providers| providers.iter().map(|(id, value)| {
+        let provider_id = value.pointer("/manifest/provider/id").and_then(Value::as_str).unwrap_or("custom-openai-compatible").to_owned();
+        let name = value.pointer("/manifest/provider/name").and_then(Value::as_str).unwrap_or(id).to_owned();
+        (id.clone(), ApiAsset { id: id.clone(), provider_instance_id: id.clone(), provider_id, name, billing: BillingPolicy::default() })
+    }).collect()).unwrap_or_default();
+    raw["schema_version"] = Value::from(WORKSPACE_SCHEMA_VERSION);
+    raw["wallet"] = serde_json::to_value(ApiWallet { assets })?;
+    raw["projects"] = serde_json::to_value(WorkspaceProjects {
+        projects: BTreeMap::from([(project.id.clone(), project)]),
+    })?;
+    serde_json::from_value(raw).map_err(Into::into)
+}
+
+fn migrate_workspace_v2(mut raw: Value) -> Result<WorkspacePackage, CoreError> {
+    raw["schema_version"] = Value::from(WORKSPACE_SCHEMA_VERSION);
+    if let Some(projects) = raw.pointer_mut("/projects") {
+        if let Some(object) = projects.as_object_mut() {
+            object.remove("activeProjectId");
+            object.remove("activeCanvasId");
+            object.remove("active_project_id");
+            object.remove("active_canvas_id");
+        }
+        if let Some(project_map) = projects.get_mut("projects").and_then(Value::as_object_mut) {
+            for project in project_map.values_mut() {
+                if let Some(canvases) = project.get_mut("canvases").and_then(Value::as_object_mut) {
+                    for canvas in canvases.values_mut() {
+                        if canvas.get("draftRevision").is_none() {
+                            canvas["draftRevision"] = Value::from(1);
+                        }
+                        if canvas.get("appliedRevision").is_none() {
+                            canvas["appliedRevision"] = Value::from(0);
+                        }
+                        if canvas.get("appliedGraph").is_none() {
+                            canvas["appliedGraph"] = Value::Null;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    serde_json::from_value(raw).map_err(Into::into)
 }
 
 fn scan_sensitive_value(
@@ -281,7 +506,7 @@ mod tests {
 
     fn empty_workspace() -> WorkspacePackage {
         WorkspacePackage {
-            schema_version: 1,
+            schema_version: WORKSPACE_SCHEMA_VERSION,
             id: "workspace".to_owned(),
             name: "Workspace".to_owned(),
             runtime: RuntimeConfig {
@@ -305,6 +530,8 @@ mod tests {
                 }],
                 edges: Vec::new(),
             },
+            wallet: ApiWallet::default(),
+            projects: WorkspaceProjects::default(),
             ui: serde_json::json!({"positions": {"group": [10, 20]}}),
             templates: BTreeMap::new(),
         }
@@ -332,14 +559,31 @@ mod tests {
     #[test]
     fn newer_schema_opens_read_only() -> Result<(), CoreError> {
         let mut value = serde_json::to_value(empty_workspace())?;
-        value["schema_version"] = Value::from(2);
+        value["schema_version"] = Value::from(WORKSPACE_SCHEMA_VERSION + 1);
         assert!(matches!(
             load_workspace_json(&value.to_string())?,
             WorkspaceLoad::ReadOnly {
-                schema_version: 2,
+                schema_version: 4,
                 ..
             }
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn migrates_v1_workspace_to_project_canvas_layout() -> Result<(), CoreError> {
+        let mut value = serde_json::to_value(empty_workspace())?;
+        value["schema_version"] = Value::from(1);
+        value.as_object_mut().expect("object").remove("wallet");
+        value.as_object_mut().expect("object").remove("projects");
+        let WorkspaceLoad::Ready { workspace } = load_workspace_json(&value.to_string())? else {
+            panic!("V1 workspace must migrate");
+        };
+        assert_eq!(workspace.schema_version, WORKSPACE_SCHEMA_VERSION);
+        assert_eq!(workspace.projects.projects.len(), 1);
+        let desktop = serde_json::to_value(&workspace.projects)?;
+        assert!(desktop.get("activeCanvasId").is_none());
+        assert!(desktop.pointer("/projects/default/folders/default/canvasIds").is_some());
         Ok(())
     }
 }

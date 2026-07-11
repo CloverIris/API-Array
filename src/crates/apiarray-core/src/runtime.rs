@@ -182,7 +182,7 @@ impl RuntimeConfig {
                 .iter()
                 .filter(|field| field.secret && field.required)
             {
-                if !instance.secret_refs.contains_key(&field.id) {
+                if instance.enabled && !instance.secret_refs.contains_key(&field.id) {
                     issues.push(ValidationIssue::new(
                         format!("{path}.secret_refs.{}", field.id),
                         "SECRET_REFERENCE_REQUIRED",

@@ -3,39 +3,39 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getDesktopSnapshot,
+  getProjectTree,
   getWorkspaceUiState,
   saveWorkspaceUiState,
+  type CanvasTab,
   type DesktopSnapshot,
+  type ProjectTree,
   type WorkspaceUiState,
 } from "../lib/desktop";
 import type { AppPage } from "../components/navigation";
 import { readError } from "../components/shared";
 
-export type WorkspaceSelection =
-  | { kind: "workspace" }
-  | { kind: "node"; id: string }
-  | { kind: "edge"; id: string };
+export type DesktopRoute =
+  | { kind: "global"; page: AppPage }
+  | { kind: "canvas"; projectId: string; canvasId: string; tab: CanvasTab };
 
 export const defaultUiState: WorkspaceUiState = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   themePreference: "system",
   viewMode: "simple",
   lastPage: "overview",
   workspaceIntent: "manage_apis",
-  shell: {
-    leftSidebarCollapsed: false,
-    rightInspectorOpen: false,
-    rightInspectorPinned: false,
-    leftWidth: 188,
-    rightWidth: 320,
-  },
+  shell: { leftSidebarCollapsed: false, rightInspectorOpen: false, rightInspectorPinned: false, leftWidth: 248, rightWidth: 320 },
   workflows: {},
+  selectedProjectId: null,
+  selectedCanvasId: null,
+  expandedProjectIds: [],
+  expandedFolderIds: [],
+  canvasTabs: {},
 };
 
 export function useDesktopWorkspaceController() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
-  const [page, setPage] = useState<AppPage>("overview");
-  const [selection, setSelection] = useState<WorkspaceSelection>({ kind: "workspace" });
+  const [projectTree, setProjectTree] = useState<ProjectTree>({ projects: {} });
   const [uiState, setUiState] = useState<WorkspaceUiState>(defaultUiState);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,58 +44,50 @@ export function useDesktopWorkspaceController() {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      setSnapshot(await getDesktopSnapshot());
-    } catch (reason) {
-      setError(readError(reason));
-    } finally {
-      setLoading(false);
-    }
+      const [nextSnapshot, nextTree] = await Promise.all([getDesktopSnapshot(), getProjectTree()]);
+      setSnapshot(nextSnapshot);
+      setProjectTree(normalizeProjectTree(nextTree));
+    } catch (reason) { setError(readError(reason)); } finally { setLoading(false); }
   }, []);
 
   useEffect(() => {
-    void Promise.all([refresh(), getWorkspaceUiState().then((next) => {
-      setUiState(next);
-      if (isAppPage(next.lastPage)) setPage(next.lastPage);
-    }).catch(() => undefined)]);
+    void Promise.all([refresh(), getWorkspaceUiState().then((next) => setUiState(normalizeUiState(next))).catch(() => undefined)]);
   }, [refresh]);
 
   const updateUiState = useCallback((updater: (current: WorkspaceUiState) => WorkspaceUiState) => {
     setUiState((current) => {
-      const next = updater(current);
+      const next = normalizeUiState(updater(current));
       if (saveTimer.current) clearTimeout(saveTimer.current);
-      saveTimer.current = setTimeout(() => {
-        void saveWorkspaceUiState(next).catch((reason) => setError(readError(reason)));
-      }, 350);
+      saveTimer.current = setTimeout(() => void saveWorkspaceUiState(next).catch((reason) => setError(readError(reason))), 300);
       return next;
     });
   }, []);
 
-  useEffect(() => () => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-  }, []);
+  useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
-  const navigate = useCallback((next: AppPage) => {
-    setPage(next);
-    setSelection({ kind: "workspace" });
-    updateUiState((current) => ({ ...current, lastPage: next }));
-  }, [updateUiState]);
+  const openGlobal = useCallback((page: AppPage) => updateUiState((current) => ({ ...current, lastPage: page, selectedProjectId: null, selectedCanvasId: null })), [updateUiState]);
+  const openCanvas = useCallback((projectId: string, canvasId: string) => updateUiState((current) => ({ ...current, selectedProjectId: projectId, selectedCanvasId: canvasId, expandedProjectIds: unique([...current.expandedProjectIds, projectId]) })), [updateUiState]);
+  const setCanvasTab = useCallback((tab: CanvasTab) => updateUiState((current) => current.selectedCanvasId ? ({ ...current, canvasTabs: { ...current.canvasTabs, [current.selectedCanvasId]: tab } }) : current), [updateUiState]);
+  const toggleProject = useCallback((id: string) => updateUiState((current) => ({ ...current, expandedProjectIds: toggle(current.expandedProjectIds, id) })), [updateUiState]);
+  const toggleFolder = useCallback((id: string) => updateUiState((current) => ({ ...current, expandedFolderIds: toggle(current.expandedFolderIds, id) })), [updateUiState]);
 
-  return {
-    snapshot,
-    setSnapshot,
-    page,
-    navigate,
-    selection,
-    setSelection,
-    uiState,
-    updateUiState,
-    loading,
-    error,
-    setError,
-    refresh,
-  };
+  const selectedCanvas = uiState.selectedProjectId && uiState.selectedCanvasId ? projectTree.projects[uiState.selectedProjectId]?.canvases[uiState.selectedCanvasId] : null;
+  const route: DesktopRoute = selectedCanvas && uiState.selectedProjectId && uiState.selectedCanvasId
+    ? { kind: "canvas", projectId: uiState.selectedProjectId, canvasId: uiState.selectedCanvasId, tab: uiState.canvasTabs[uiState.selectedCanvasId] ?? "overview" }
+    : { kind: "global", page: isAppPage(uiState.lastPage) ? uiState.lastPage : "overview" };
+
+  return { snapshot, setSnapshot, projectTree, setProjectTree, route, uiState, updateUiState, openGlobal, openCanvas, setCanvasTab, toggleProject, toggleFolder, loading, error, setError, refresh };
 }
 
-function isAppPage(value: string): value is AppPage {
-  return ["overview", "assets", "workflows", "publishers", "runs", "notifications", "templates", "settings"].includes(value);
+function normalizeProjectTree(tree: ProjectTree): ProjectTree {
+  const projects = Object.fromEntries(Object.entries(tree?.projects ?? {}).map(([id, project]) => [id, { ...project, folders: Object.fromEntries(Object.entries(project?.folders ?? {}).map(([folderId, folder]) => [folderId, { ...folder, canvasIds: Array.isArray(folder?.canvasIds) ? folder.canvasIds : [] }])), canvases: project?.canvases ?? {} }]));
+  return { projects };
 }
+
+function normalizeUiState(state: WorkspaceUiState): WorkspaceUiState {
+  return { ...defaultUiState, ...state, schemaVersion: 3, shell: { ...defaultUiState.shell, ...(state?.shell ?? {}) }, workflows: state?.workflows ?? {}, selectedProjectId: state?.selectedProjectId ?? null, selectedCanvasId: state?.selectedCanvasId ?? null, expandedProjectIds: Array.isArray(state?.expandedProjectIds) ? state.expandedProjectIds : [], expandedFolderIds: Array.isArray(state?.expandedFolderIds) ? state.expandedFolderIds : [], canvasTabs: state?.canvasTabs ?? {} };
+}
+
+function toggle(items: string[], id: string) { return items.includes(id) ? items.filter((item) => item !== id) : [...items, id]; }
+function unique(items: string[]) { return [...new Set(items)]; }
+function isAppPage(value: string): value is AppPage { return ["overview", "assets", "workflows", "publishers", "runs", "notifications", "templates", "settings"].includes(value); }

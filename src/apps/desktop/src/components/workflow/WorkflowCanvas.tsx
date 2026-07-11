@@ -25,9 +25,9 @@ import { Button } from "@openai/apps-sdk-ui/components/Button";
 import { Branch } from "@openai/apps-sdk-ui/components/Icon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  getWorkflowGraph,
-  getWorkflowNodeImpact,
-  saveWorkflowGraph,
+  getCanvasGraph,
+  getCanvasNodeImpact,
+  saveCanvasGraph,
   validateWorkflowGraph,
   type WorkflowGraph,
   type WorkflowValidationResult,
@@ -67,11 +67,11 @@ const ariaLabels = {
 
 type HistoryEntry = { nodes: CanvasNode[]; edges: CanvasEdge[] };
 
-export function WorkflowCanvas({ uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
-  return <ReactFlowProvider><WorkflowCanvasInner uiState={uiState} publisherRunning={publisherRunning} onUiState={onUiState} onSelection={onSelection} onGraphChange={onGraphChange} /></ReactFlowProvider>;
+export function WorkflowCanvas({ projectId, canvasId, uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { projectId: string; canvasId: string; uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
+  return <ReactFlowProvider><WorkflowCanvasInner projectId={projectId} canvasId={canvasId} uiState={uiState} publisherRunning={publisherRunning} onUiState={onUiState} onSelection={onSelection} onGraphChange={onGraphChange} /></ReactFlowProvider>;
 }
 
-function WorkflowCanvasInner({ uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
+function WorkflowCanvasInner({ projectId, canvasId, uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { projectId: string; canvasId: string; uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
   const [graph, setGraph] = useState<WorkflowGraph | null>(null);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
@@ -84,7 +84,7 @@ function WorkflowCanvasInner({ uiState, publisherRunning, onUiState, onSelection
   const { fitView, screenToFlowPosition } = useReactFlow<CanvasNode, CanvasEdge>();
 
   useEffect(() => {
-    void getWorkflowGraph().then((nextGraph) => {
+    void getCanvasGraph(projectId, canvasId).then((nextGraph) => {
       const canvas = graphToCanvas(nextGraph, uiState);
       setGraph(nextGraph);
       setNodes(canvas.nodes);
@@ -113,14 +113,14 @@ function WorkflowCanvasInner({ uiState, publisherRunning, onUiState, onSelection
     const current = nodes.find((item) => item.id === id);
     if (!current) return;
     if (current.data.model.enabled && graph?.nodes.some((item) => item.id === id)) {
-      const impact = await getWorkflowNodeImpact(id).catch(() => null);
+      const impact = await getCanvasNodeImpact(projectId, canvasId, id).catch(() => null);
       const detail = impact
         ? [`下游节点：${impact.downstream_nodes.join("、") || "无"}`, `受影响 Publisher：${impact.affected_publishers.join("、") || "无"}`].join("\n")
         : "暂时无法读取完整影响范围。";
       if (!window.confirm(`停用 ${current.data.model.name} 可能中断请求路径。\n${detail}\n\n是否继续？`)) return;
     }
     updateNode(id, { enabled: !current.data.model.enabled });
-  }, [graph, nodes, updateNode]);
+  }, [canvasId, graph, nodes, projectId, updateNode]);
 
   const displayedNodes = useMemo(() => nodes.map((node) => ({ ...node, data: { ...node.data, onToggle: (id: string) => void toggleNode(id) } })), [nodes, toggleNode]);
 
@@ -171,7 +171,7 @@ function WorkflowCanvasInner({ uiState, publisherRunning, onUiState, onSelection
   const autoLayout = () => { if (!graph) return; snapshotHistory(); const currentGraph = canvasToGraph(graph, nodes, edges); const positions = layeredPositions(currentGraph); setNodes((current) => current.map((node) => ({ ...node, position: positions[node.id] ?? node.position }))); markDirty(); window.setTimeout(() => void fitView({ padding: 0.18, duration: 250 }), 0); };
   const currentGraph = useCallback(() => graph ? canvasToGraph(graph, nodes, edges) : null, [edges, graph, nodes]);
   const validate = async () => { const candidate = currentGraph(); if (!candidate) return; setLocalError(null); try { setValidation(await validateWorkflowGraph(candidate)); } catch (reason) { setLocalError(readError(reason)); } };
-  const save = async () => { const candidate = currentGraph(); if (!candidate) return; setSaveState("saving"); setLocalError(null); try { const result = await validateWorkflowGraph(candidate); setValidation(result); if (!result.valid) { setSaveState("failed"); return; } const saved = await saveWorkflowGraph(candidate); setGraph(saved); setSaveState("saved"); onGraphChange?.(saved); } catch (reason) { setLocalError(readError(reason)); setSaveState("failed"); } };
+  const save = async () => { const candidate = currentGraph(); if (!candidate) return; setSaveState("saving"); setLocalError(null); try { const result = await validateWorkflowGraph(candidate); setValidation(result); if (!result.valid) { setSaveState("failed"); return; } const saved = await saveCanvasGraph(projectId, canvasId, candidate); setGraph(saved.canvas.graph); setSaveState("saved"); onGraphChange?.(saved.canvas.graph); } catch (reason) { setLocalError(readError(reason)); setSaveState("failed"); } };
 
   const moveEnd = (_: MouseEvent | TouchEvent | null, viewport: Viewport) => {
     if (!graph) return;
@@ -191,7 +191,7 @@ function WorkflowCanvasInner({ uiState, publisherRunning, onUiState, onSelection
   }, [edges, graph, nodes, onSelection]);
   const beforeDelete = async ({ nodes: deletingNodes }: { nodes: CanvasNode[]; edges: CanvasEdge[] }) => {
     if (!deletingNodes.length) return true;
-    const impacts = await Promise.all(deletingNodes.filter((node) => graph?.nodes.some((item) => item.id === node.id)).map((node) => getWorkflowNodeImpact(node.id).catch(() => null)));
+    const impacts = await Promise.all(deletingNodes.filter((node) => graph?.nodes.some((item) => item.id === node.id)).map((node) => getCanvasNodeImpact(projectId, canvasId, node.id).catch(() => null)));
     const publishers = [...new Set(impacts.flatMap((impact) => impact?.affected_publishers ?? []))];
     const downstream = [...new Set(impacts.flatMap((impact) => impact?.downstream_nodes ?? []))];
     const detail = [`将删除 ${deletingNodes.length} 个节点。`, publishers.length ? `受影响 Publisher：${publishers.join("、")}` : "没有已发布出口受影响。", downstream.length ? `下游节点：${downstream.join("、")}` : "没有下游节点。"].join("\n");

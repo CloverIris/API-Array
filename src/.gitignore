@@ -4,4 +4,5 @@
 !/.env.example
 /runtime-audit.jsonl
 /.apiarray-control-demo/
-
+../codex-target
+/.gitignore

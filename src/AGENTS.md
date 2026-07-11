@@ -1,5 +1,10 @@
 # API ARRAY 开发约定
 
+> **V0.2 钱包与项目画布约束**：开始桌面、Workspace 或工作流相关工作前，必须阅读
+> `docs/API_ARRAY_产品设计文档_V0.2_钱包与项目画布变更.md`。API 钱包是工作区级资产；
+> 每个新 Canvas 只有一个总输出器；未确认的预放置绝不持久化；Secret 与真实/推测价格
+> 不得进入工作区、UI 状态、日志、错误或导出文件。
+
 本文件适用于 `src/` 下的全部源代码、配置、测试、脚本与资源。开始开发前必须同时阅读根目录 `README.md` 和 `docs/API_ARRAY_产品设计文档_V0.1.md`。产品设计文档中的冻结决策优先于一般实现偏好。
 
 ## 1. 当前阶段
@@ -203,3 +208,15 @@ CLI 输入输出结构必须版本化，至少预留 `schema_version` 字段。
 
 除非构建工具存在无法规避的根目录要求，否则不得在仓库根目录散落开发文件。需要改变这一冻结结构时，先更新产品设计决策，而不是直接添加文件。
 
+# Canvas V3 强制约束（2026-07）
+
+后续桌面开发必须先阅读 `../docs/API_ARRAY_产品设计文档_V0.2_钱包与项目画布变更.md` 的“Canvas 独立工作台与两级信息架构”。以下规则不可绕过：
+
+- 全局层管理钱包、运行总览、综合器、Publisher 总面板和审计；Project/Folder 仅组织 Canvas。
+- Canvas 是唯一编辑与运行边界，拥有独立 Graph、草稿/应用版本、Publisher、活文档和记录。
+- 所有 Canvas IPC 变更必须显式提供 `projectId + canvasId`，不得从当前 UI 选择推断后端目标。
+- 旧 `workspace.graph` 仅可用于迁移和兼容读取，正式编辑页面不得再使用。
+- API Wallet 是 Workspace 共享资产；删除 Canvas 不得删除钱包资产或上游 Secret。
+- 复制 Canvas 不复制 Token、端口或运行状态；Secret 不通过 IPC 返回，也不进入日志、UI State 或导出。
+- 前端边界必须规范化 camelCase/snake_case 旧数据，缺失数组和映射一律安全降级，禁止未检查的 `.map()`。
+- Canvas 行只做导航与状态表达；运行、暂停、停止、刷新属于 Canvas 工作台顶部操作。

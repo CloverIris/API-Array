@@ -11,30 +11,19 @@ import type { SelectedWorkflowItem } from "../components/workflow/WorkflowInspec
 import { useDesktopWorkspaceController } from "../hooks/useDesktopWorkspaceController";
 import { useTheme } from "../hooks/useTheme";
 
-export default function HomePage() {
-  return <AppsSDKUIProvider linkComponent="a"><DesktopApp /></AppsSDKUIProvider>;
-}
+export default function HomePage() { return <AppsSDKUIProvider linkComponent="a"><DesktopApp /></AppsSDKUIProvider>; }
 
 function DesktopApp() {
   const controller = useDesktopWorkspaceController();
   const [workflowSelection, setWorkflowSelection] = useState<SelectedWorkflowItem>(null);
   useTheme(controller.uiState.themePreference);
   const updateUi = useCallback((next: typeof controller.uiState) => controller.updateUiState(() => next), [controller.updateUiState]);
-  const selectWorkflowItem = useCallback((selection: SelectedWorkflowItem) => {
-    setWorkflowSelection((current) => sameSelection(current, selection) ? current : selection);
-    if (selection) controller.updateUiState((current) => current.shell.rightInspectorOpen ? current : ({ ...current, shell: { ...current.shell, rightInspectorOpen: true } }));
-  }, [controller.updateUiState]);
-
+  const selectWorkflowItem = useCallback((selection: SelectedWorkflowItem) => { setWorkflowSelection((current) => sameSelection(current, selection) ? current : selection); if (selection) controller.updateUiState((current) => current.shell.rightInspectorOpen ? current : ({ ...current, shell: { ...current.shell, rightInspectorOpen: true } })); }, [controller.updateUiState]);
   if (controller.loading) return <div className="boot-screen"><CheckCircle className="size-5" />正在打开本地工作区…</div>;
-  if (!controller.snapshot?.initialized) return <Onboarding initialError={controller.error ?? controller.snapshot?.startupError ?? null} onCreated={(snapshot, workspaceIntent) => { controller.setSnapshot(snapshot); controller.updateUiState((current) => ({ ...current, workspaceIntent, lastPage: "overview" })); }} />;
-
+  if (!controller.snapshot?.initialized) return <Onboarding initialError={controller.error ?? controller.snapshot?.startupError ?? null} onCreated={(snapshot, workspaceIntent) => { controller.setSnapshot(snapshot); controller.updateUiState((current) => ({ ...current, workspaceIntent, lastPage: "overview" })); void controller.refresh(); }} />;
   const snapshot = controller.snapshot;
   const control = snapshot.control!;
-  return <AppShell control={control} page={controller.page} uiState={controller.uiState} error={controller.error} onNavigate={controller.navigate} onRefresh={() => void controller.refresh()} onUiState={updateUi} inspector={<ContextInspector page={controller.page} control={control} workflowSelection={workflowSelection} />}><MainWorkspace page={controller.page} snapshot={snapshot} uiState={controller.uiState} onSnapshot={controller.setSnapshot} onUiState={updateUi} onWorkflowSelection={selectWorkflowItem} onNavigate={controller.navigate} /></AppShell>;
+  return <AppShell control={control} route={controller.route} projectTree={controller.projectTree} uiState={controller.uiState} error={controller.error} onNavigate={controller.openGlobal} onOpenCanvas={controller.openCanvas} onTree={controller.setProjectTree} onRefresh={() => void controller.refresh()} onUiState={updateUi} inspector={<ContextInspector route={controller.route} tree={controller.projectTree} control={control} workflowSelection={workflowSelection} />}><MainWorkspace route={controller.route} projectTree={controller.projectTree} snapshot={snapshot} uiState={controller.uiState} onSnapshot={controller.setSnapshot} onTree={controller.setProjectTree} onUiState={updateUi} onCanvasTab={controller.setCanvasTab} onOpenCanvas={controller.openCanvas} onWorkflowSelection={selectWorkflowItem} onChanged={() => void controller.refresh()} /></AppShell>;
 }
 
-function sameSelection(left: SelectedWorkflowItem, right: SelectedWorkflowItem) {
-  if (!left || !right) return left === right;
-  if (left.kind !== right.kind) return false;
-  return left.kind === "node" && right.kind === "node" ? left.node.id === right.node.id : left.kind === "edge" && right.kind === "edge" && left.edge.id === right.edge.id;
-}
+function sameSelection(left: SelectedWorkflowItem, right: SelectedWorkflowItem) { if (!left || !right) return left === right; if (left.kind !== right.kind) return false; return left.kind === "node" && right.kind === "node" ? left.node.id === right.node.id : left.kind === "edge" && right.kind === "edge" && left.edge.id === right.edge.id; }

@@ -137,13 +137,13 @@ mod tests {
     use super::*;
     use apiarray_core::graph::WorkflowGraph;
     use apiarray_core::runtime::RuntimeConfig;
-    use apiarray_core::workspace::WorkspaceRuntimeState;
+    use apiarray_core::workspace::{ApiWallet, WorkspaceProjects, WorkspaceRuntimeState, WORKSPACE_SCHEMA_VERSION};
     use serde_json::Value;
     use std::collections::BTreeMap;
 
     fn workspace() -> WorkspacePackage {
         WorkspacePackage {
-            schema_version: 1,
+            schema_version: WORKSPACE_SCHEMA_VERSION,
             id: "workspace".to_owned(),
             name: "Workspace".to_owned(),
             runtime: RuntimeConfig {
@@ -159,6 +159,8 @@ mod tests {
                 nodes: Vec::new(),
                 edges: Vec::new(),
             },
+            wallet: ApiWallet::default(),
+            projects: WorkspaceProjects::default(),
             ui: Value::Null,
             templates: BTreeMap::new(),
         }
