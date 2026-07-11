@@ -3,4 +3,5 @@
 /.env.*
 !/.env.example
 /runtime-audit.jsonl
+/.apiarray-control-demo/
 

@@ -12,11 +12,19 @@ pub struct WorkspacePackage {
     pub id: String,
     pub name: String,
     pub runtime: RuntimeConfig,
+    #[serde(default)]
+    pub runtime_state: WorkspaceRuntimeState,
     pub graph: WorkflowGraph,
     #[serde(default)]
     pub ui: Value,
     #[serde(default)]
     pub templates: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WorkspaceRuntimeState {
+    #[serde(default)]
+    pub enabled_publishers: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +78,15 @@ impl WorkspacePackage {
                 "WORKSPACE_ID_MISMATCH",
                 "Runtime ID 必须与工作区 ID 一致",
             ));
+        }
+        for publisher_id in &self.runtime_state.enabled_publishers {
+            if !self.runtime.publishers.contains_key(publisher_id) {
+                issues.push(ValidationIssue::new(
+                    format!("runtime_state.enabled_publishers.{publisher_id}"),
+                    "PUBLISHER_NOT_FOUND",
+                    "启用状态引用了不存在的 Publisher",
+                ));
+            }
         }
         if let Err(error) = self.runtime.clone().compile() {
             append_issues(&mut issues, "runtime", error);
@@ -273,6 +290,7 @@ mod tests {
                 providers: BTreeMap::new(),
                 publishers: BTreeMap::new(),
             },
+            runtime_state: WorkspaceRuntimeState::default(),
             graph: WorkflowGraph {
                 schema_version: 1,
                 id: "graph".to_owned(),

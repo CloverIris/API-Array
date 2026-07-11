@@ -18,6 +18,10 @@ pub enum RuntimeErrorCode {
     PublisherBindFailed,
     PublisherServeFailed,
     AuditUnavailable,
+    SecretStoreUnavailable,
+    WorkspaceStorageUnavailable,
+    PublisherAlreadyRunning,
+    PublisherNotRunning,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

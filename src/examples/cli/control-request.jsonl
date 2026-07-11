@@ -1,0 +1,1 @@
+{"schema_version":1,"operation":"save_workspace","root":"./.apiarray-control-demo","workspace":{"schema_version":1,"id":"control-demo","name":"Control Demo","runtime":{"schema_version":1,"id":"control-demo","providers":{},"publishers":{}},"runtime_state":{"enabled_publishers":[]},"graph":{"schema_version":1,"id":"graph","nodes":[],"edges":[]},"ui":null,"templates":{}}}

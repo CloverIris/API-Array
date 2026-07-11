@@ -495,7 +495,12 @@ fn runtime_error_response(error: RuntimeError) -> Response {
         | RuntimeErrorCode::TransportBuildFailed
         | RuntimeErrorCode::PublisherBindFailed
         | RuntimeErrorCode::PublisherServeFailed
-        | RuntimeErrorCode::AuditUnavailable => StatusCode::INTERNAL_SERVER_ERROR,
+        | RuntimeErrorCode::AuditUnavailable
+        | RuntimeErrorCode::SecretStoreUnavailable
+        | RuntimeErrorCode::WorkspaceStorageUnavailable => StatusCode::INTERNAL_SERVER_ERROR,
+        RuntimeErrorCode::PublisherAlreadyRunning | RuntimeErrorCode::PublisherNotRunning => {
+            StatusCode::CONFLICT
+        }
         RuntimeErrorCode::UpstreamFailed
         | RuntimeErrorCode::ResponseTooLarge
         | RuntimeErrorCode::ResponseInvalid => StatusCode::BAD_GATEWAY,

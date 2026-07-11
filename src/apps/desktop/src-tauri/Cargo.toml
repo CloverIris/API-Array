@@ -1,0 +1,31 @@
+[package]
+name = "apiarray-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "apiarray_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "apiarray-desktop"
+path = "src/main.rs"
+
+[dependencies]
+apiarray-core = { path = "../../../crates/apiarray-core" }
+apiarray-runtime = { path = "../../../crates/apiarray-runtime" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-window-state = "2"
+tokio = { workspace = true }
+window-vibrancy = "0.7.1"
+
+[build-dependencies]
+tauri-build = "2"
+
+[lints]
+workspace = true
