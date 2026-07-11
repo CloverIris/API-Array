@@ -25,7 +25,7 @@ APIArray/
 
 ## Rust Core
 
-当前 Rust Core 已包含 Provider YAML、统一请求与响应模型、OpenAI/Anthropic/Gemini Adapter、SSE 解析、工作流与路由、Runtime 配置编译、健康状态、Publisher 安全约束、活文档模板和 JSON Lines CLI。
+当前 Rust 实现已包含 Provider YAML、统一请求与响应模型、OpenAI/Anthropic/Gemini Adapter、字节级 SSE 解析、工作流与路由、Runtime 配置编译、健康状态、Publisher 安全约束、活文档模板、JSON Lines CLI，以及独立的异步 HTTP 数据面和本地 OpenAI-compatible Publisher。
 
 在 PowerShell 中执行完整验证：
 
@@ -40,3 +40,12 @@ cd src
 cd src
 .\scripts\Run-Cli.ps1 -InputFile .\examples\cli\plan-dispatch.jsonl
 ```
+
+构建并启动本地 Publisher：
+
+```powershell
+cd src
+.\scripts\Run-Publisher.ps1 -InputFile .\examples\cli\launch-publisher.jsonl
+```
+
+示例启动文件只包含 Secret 引用到环境变量名的绑定，不包含真实密钥。当前尚未进行真实上游 API 联调。

@@ -283,6 +283,14 @@ impl CompiledRuntime {
         &self.summary
     }
 
+    #[must_use]
+    pub fn publisher_config(&self, publisher_id: &str) -> Option<&PublisherConfig> {
+        self.config
+            .publishers
+            .get(publisher_id)
+            .map(|publisher| &publisher.config)
+    }
+
     /// 将 Publisher 请求编译为一个不包含明文密钥的上游 Transport Plan。
     ///
     /// # Errors

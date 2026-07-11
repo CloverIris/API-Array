@@ -2,6 +2,7 @@
 members = [
     "crates/apiarray-core",
     "crates/apiarray-cli",
+    "crates/apiarray-runtime",
 ]
 resolver = "3"
 
@@ -15,6 +16,14 @@ rust-version = "1.97"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_norway = "0.9.42"
+axum = "0.8"
+bytes = "1"
+dotenvy = "0.15.7"
+futures-util = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "stream", "rustls"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = "0.1"
+zeroize = { version = "1.9", features = ["std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

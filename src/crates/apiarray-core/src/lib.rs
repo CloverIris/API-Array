@@ -11,6 +11,7 @@ pub mod error;
 pub mod events;
 pub mod graph;
 pub mod health;
+pub mod openai;
 pub mod provider;
 pub mod publisher;
 pub mod routing;

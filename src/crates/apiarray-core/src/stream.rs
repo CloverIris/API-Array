@@ -18,6 +18,12 @@ pub struct SseDecoder {
     buffer: String,
 }
 
+/// 面向真实网络字节流的 SSE 解码器。它允许 UTF-8 字符跨网络 chunk 切分。
+#[derive(Debug, Default)]
+pub struct SseByteDecoder {
+    buffer: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
@@ -77,6 +83,55 @@ impl SseDecoder {
     pub fn finish(&mut self) -> Option<SseFrame> {
         let remaining = std::mem::take(&mut self.buffer);
         parse_frame(remaining.trim_end_matches(['\r', '\n']))
+    }
+}
+
+impl SseByteDecoder {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+
+    /// 输入任意字节 chunk，并返回目前完整的 SSE 帧。
+    ///
+    /// # Errors
+    ///
+    /// 完整 SSE 帧不是 UTF-8 时返回 [`ErrorCode::StreamInvalid`]。
+    pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseFrame>, CoreError> {
+        self.buffer.extend_from_slice(chunk);
+        let mut frames = Vec::new();
+        while let Some((boundary, delimiter_len)) = find_byte_boundary(&self.buffer) {
+            let block = self.buffer.drain(..boundary).collect::<Vec<_>>();
+            self.buffer.drain(..delimiter_len);
+            let block = String::from_utf8(block).map_err(|error| {
+                CoreError::new(
+                    ErrorCode::StreamInvalid,
+                    format!("SSE 帧不是有效 UTF-8: {error}"),
+                )
+            })?;
+            if let Some(frame) = parse_frame(&block) {
+                frames.push(frame);
+            }
+        }
+        Ok(frames)
+    }
+
+    /// 在网络流结束时解析最后一个未用空行结尾的帧。
+    ///
+    /// # Errors
+    ///
+    /// 剩余字节不是 UTF-8 时返回 [`ErrorCode::StreamInvalid`]。
+    pub fn finish(&mut self) -> Result<Option<SseFrame>, CoreError> {
+        if self.buffer.is_empty() {
+            return Ok(None);
+        }
+        let remaining = String::from_utf8(std::mem::take(&mut self.buffer)).map_err(|error| {
+            CoreError::new(
+                ErrorCode::StreamInvalid,
+                format!("SSE 尾帧不是有效 UTF-8: {error}"),
+            )
+        })?;
+        Ok(parse_frame(remaining.trim_end_matches(['\r', '\n'])))
     }
 }
 
@@ -162,6 +217,22 @@ fn parse_frame(block: &str) -> Option<SseFrame> {
             data: data_lines.join("\n"),
             id,
         })
+    }
+}
+
+fn find_byte_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let crlf = buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| (position, 4));
+    let lf = buffer
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|position| (position, 2));
+    match (crlf, lf) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(boundary), None) | (None, Some(boundary)) => Some(boundary),
+        (None, None) => None,
     }
 }
 
@@ -421,6 +492,21 @@ mod tests {
                 text: "Hi".to_owned()
             }]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn byte_decoder_preserves_split_utf8() -> Result<(), CoreError> {
+        let bytes = "data: {\"text\":\"你好\"}\n\n".as_bytes();
+        let split = bytes
+            .windows(3)
+            .position(|window| window == "你".as_bytes())
+            .expect("utf8 marker")
+            + 1;
+        let mut decoder = SseByteDecoder::new();
+        assert!(decoder.push(&bytes[..split])?.is_empty());
+        let frames = decoder.push(&bytes[split..])?;
+        assert_eq!(frames[0].data, "{\"text\":\"你好\"}");
         Ok(())
     }
 }
