@@ -1,0 +1,42 @@
+schema_version: 1
+provider:
+  id: anthropic-official
+  name: Anthropic
+  category: ai-model
+  homepage: https://www.anthropic.com/
+  docs: https://docs.anthropic.com/
+adapter:
+  id: anthropic-messages
+  min_version: 1
+endpoint:
+  default_base_url: https://api.anthropic.com
+  editable: true
+  allowed_schemes: [https]
+authentication:
+  type: header-secret
+  fields:
+    - id: api_key
+      label: API Key
+      secret: true
+      required: true
+      header: x-api-key
+headers:
+  - name: anthropic-version
+    value: "2023-06-01"
+discovery:
+  models:
+    strategy: adapter
+  balance:
+    strategy: unsupported
+probes:
+  - id: connectivity
+    kind: metadata
+    side_effect: none
+    default_enabled: true
+  - id: minimal-generation
+    kind: generation
+    side_effect: billable
+    default_enabled: false
+ui:
+  setup_help: 使用 Anthropic Console 创建的 API Key。
+

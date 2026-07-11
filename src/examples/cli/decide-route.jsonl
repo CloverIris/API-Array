@@ -1,0 +1,2 @@
+{"schema_version":1,"operation":"decide_route","policy":{"schema_version":1,"id":"default","timeout_ms":30000,"max_retries":2,"failover_on":["PROVIDER_TIMEOUT","RATE_LIMITED"]},"request":{"model":"smart","excluded_candidates":[],"previous_error":null},"candidates":[{"id":"primary","priority":0,"enabled":true,"health":"healthy","models":["smart"]},{"id":"backup","priority":10,"enabled":true,"health":"healthy","models":["smart"]}]}
+

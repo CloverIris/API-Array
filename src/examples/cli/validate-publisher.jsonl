@@ -1,0 +1,2 @@
+{"schema_version":1,"operation":"validate_publisher","publisher":{"schema_version":1,"id":"local-ai","name":"Local AI","listen_address":"127.0.0.1","port":6188,"base_path":"/v1","require_token":true,"token_ref":"secret://publisher/local-ai"}}
+

@@ -1,0 +1,41 @@
+schema_version: 1
+provider:
+  id: openai-official
+  name: OpenAI
+  category: ai-model
+  homepage: https://openai.com/
+  docs: https://platform.openai.com/docs/
+adapter:
+  id: openai-compatible
+  min_version: 1
+endpoint:
+  default_base_url: https://api.openai.com/v1
+  editable: true
+  allowed_schemes: [https]
+authentication:
+  type: header-secret
+  fields:
+    - id: api_key
+      label: API Key
+      secret: true
+      required: true
+      header: Authorization
+      prefix: "Bearer "
+discovery:
+  models:
+    strategy: endpoint
+    path: /models
+  balance:
+    strategy: unsupported
+probes:
+  - id: models
+    kind: metadata
+    side_effect: none
+    default_enabled: true
+  - id: minimal-generation
+    kind: generation
+    side_effect: billable
+    default_enabled: false
+ui:
+  setup_help: 密钥只保存在系统凭据保险库中，工作区仅保存 Secret 引用。
+

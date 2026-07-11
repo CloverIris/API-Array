@@ -1,0 +1,39 @@
+schema_version: 1
+provider:
+  id: google-gemini-official
+  name: Google Gemini
+  category: ai-model
+  homepage: https://ai.google.dev/
+  docs: https://ai.google.dev/gemini-api/docs
+adapter:
+  id: google-gemini
+  min_version: 1
+endpoint:
+  default_base_url: https://generativelanguage.googleapis.com
+  editable: true
+  allowed_schemes: [https]
+authentication:
+  type: header-secret
+  fields:
+    - id: api_key
+      label: API Key
+      secret: true
+      required: true
+      header: x-goog-api-key
+discovery:
+  models:
+    strategy: adapter
+  balance:
+    strategy: unsupported
+probes:
+  - id: models
+    kind: metadata
+    side_effect: none
+    default_enabled: true
+  - id: minimal-generation
+    kind: generation
+    side_effect: billable
+    default_enabled: false
+ui:
+  setup_help: 使用 Google AI Studio 或对应 Google Cloud 项目提供的凭据。
+

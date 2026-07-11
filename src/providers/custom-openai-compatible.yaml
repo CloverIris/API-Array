@@ -1,0 +1,39 @@
+schema_version: 1
+provider:
+  id: custom-openai-compatible
+  name: Custom OpenAI-compatible
+  category: ai-model
+adapter:
+  id: openai-compatible
+  min_version: 1
+endpoint:
+  default_base_url: https://example.invalid/v1
+  editable: true
+  allowed_schemes: [https, http]
+authentication:
+  type: header-secret
+  fields:
+    - id: api_key
+      label: API Key
+      secret: true
+      required: true
+      header: Authorization
+      prefix: "Bearer "
+discovery:
+  models:
+    strategy: endpoint
+    path: /models
+  balance:
+    strategy: unsupported
+probes:
+  - id: models
+    kind: metadata
+    side_effect: none
+    default_enabled: true
+  - id: minimal-generation
+    kind: generation
+    side_effect: billable
+    default_enabled: false
+ui:
+  setup_help: 填写中转站提供的 Base URL。HTTP 仅为本机或可信局域网兼容预留，界面应给出安全警告。
+
