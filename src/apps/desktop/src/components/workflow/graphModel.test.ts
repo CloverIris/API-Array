@@ -15,7 +15,6 @@ const graph: WorkflowGraph = {
 const uiState: WorkspaceUiState = {
   schemaVersion: 2,
   themePreference: "system",
-  viewMode: "simple",
   lastPage: "overview",
   workspaceIntent: "manage_apis",
   shell: { leftSidebarCollapsed: false, rightInspectorOpen: true, rightInspectorPinned: true, leftWidth: 230, rightWidth: 310 },

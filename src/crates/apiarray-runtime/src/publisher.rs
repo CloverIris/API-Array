@@ -12,7 +12,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
@@ -74,9 +74,19 @@ impl PublisherState {
     pub fn router(self) -> Router {
         Router::new()
             .route("/v1/chat/completions", post(chat_completions))
+            .route("/v1/models", get(models))
             .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
             .with_state(self)
     }
+}
+
+async fn models(State(state): State<PublisherState>, headers: HeaderMap) -> Response {
+    let request_id = correlation_id(&headers);
+    if let Err(error) = authorize(&state, &headers) {
+        return with_correlation_id(runtime_error_response(error), &request_id);
+    }
+    let models = state.runtime.public_models(&state.publisher_id);
+    with_correlation_id(Json(json!({"object": "list", "data": models.into_iter().map(|id| json!({"id": id, "object": "model", "owned_by": "api-array"})).collect::<Vec<_>>() })).into_response(), &request_id)
 }
 
 pub struct PublisherServer {

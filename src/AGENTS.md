@@ -208,7 +208,26 @@ CLI 输入输出结构必须版本化，至少预留 `schema_version` 字段。
 
 除非构建工具存在无法规避的根目录要求，否则不得在仓库根目录散落开发文件。需要改变这一冻结结构时，先更新产品设计决策，而不是直接添加文件。
 
-# Canvas V3 强制约束（2026-07）
+# V0.3 三站式架构强制约束（2026-07）
+
+> 当前实现已升级为 V5。后续工作首先阅读
+> `../docs/API_ARRAY_产品设计文档_V0.4_V5三页面模型.md`；若与下方 V0.3 规则冲突，以 V0.4 为准。
+
+- 钱包资产与审计直出端点必须是两个实体；禁止把 alias、直出 Token 或本地 URL 放回 `ApiAsset`。
+- 左侧核心入口固定为 API 钱包、审计直出、编组模式；项目树只在编组上下文显示。
+- LocalGateway 只挂载 DirectEndpoint 与运行中 Canvas；钱包资产不得自动暴露。
+
+后续桌面与 Runtime 开发必须先阅读
+`../docs/API_ARRAY_产品设计文档_V0.3_三站式架构.md`。它覆盖此前 V0.2 的桌面信息架构：
+
+- API 钱包是唯一资产源；钱包直用和 Canvas 编组都必须经过同一个 localhost 审计网关。
+- 钱包入口使用 `/wallet/{assetAlias}/v1`，Canvas 入口使用 `/canvas/{canvasId}/v1`；每个入口独立 Token。
+- Project/Folder 仅做组织，Canvas 才是独立运行边界；禁止恢复无归属的全局 Publisher 创建路径。
+- 工作区 Schema V4 是 POC reset，禁止新增 V1/V2/V3 迁移或兼容读取逻辑。
+- 成本是估算、预算仅预警；任何出口、日志、UI State 或导出不得包含上游 Key、本地 Token、Authorization Header 或请求正文。
+- 桌面开发必须使用 `npm.cmd run dev`；可运行 Debug 产物必须使用 `npm.cmd run build:desktop:debug`，不能把直接 `cargo build` 的 Debug exe 当作完整桌面调试入口。
+
+# Canvas V3 历史约束（2026-07）
 
 后续桌面开发必须先阅读 `../docs/API_ARRAY_产品设计文档_V0.2_钱包与项目画布变更.md` 的“Canvas 独立工作台与两级信息架构”。以下规则不可绕过：
 

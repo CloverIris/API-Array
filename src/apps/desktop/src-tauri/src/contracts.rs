@@ -21,6 +21,16 @@ struct DesktopSnapshot {
     initialized: bool,
     startup_error: Option<String>,
     control: Option<DesktopControlSnapshot>,
+    gateway: DesktopGatewaySnapshot,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopGatewaySnapshot {
+    running: bool,
+    base_url: String,
+    entry_count: usize,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -186,6 +196,7 @@ struct WalletCard {
     provider_id: String,
     provider_instance_id: Option<String>,
     name: String,
+    endpoint_override: Option<String>,
     configured: bool,
     enabled: bool,
     source: String,
@@ -195,6 +206,7 @@ struct WalletCard {
     input_tokens: u64,
     output_tokens: u64,
     estimated_cost_micros: Option<u64>,
+    reference_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,6 +217,61 @@ struct WalletAssetInput {
     endpoint_override: Option<String>,
     monthly_budget_micros: Option<u64>,
     currency: Option<String>,
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateWalletAssetInput {
+    asset_id: String,
+    name: String,
+    endpoint_override: Option<String>,
+    enabled: bool,
+    api_key: Option<String>,
+    monthly_budget_micros: Option<u64>,
+    currency: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectEndpointInput {
+    endpoint_id: Option<String>,
+    asset_id: String,
+    name: String,
+    alias: String,
+    token: String,
+    public_model: String,
+    upstream_model: String,
+    timeout_ms: Option<u64>,
+    max_retries: Option<u32>,
+    monthly_budget_micros: Option<u64>,
+    currency: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectEndpointActionInput { endpoint_id: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectEndpointItem {
+    id: String,
+    name: String,
+    alias: String,
+    asset_id: String,
+    asset_name: String,
+    enabled: bool,
+    token_configured: bool,
+    base_url: String,
+    public_models: Vec<String>,
+    request_count: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WalletAssetImpact {
+    direct_endpoints: Vec<String>,
+    canvases: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

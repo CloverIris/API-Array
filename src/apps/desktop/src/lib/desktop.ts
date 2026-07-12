@@ -24,6 +24,7 @@ export interface DesktopSnapshot {
   initialized: boolean;
   startupError: string | null;
   control: ControlSnapshot | null;
+  gateway: { running: boolean; baseUrl: string; entryCount: number; error: string | null };
 }
 
 export const getDesktopSnapshot = () => invoke<DesktopSnapshot>("desktop_snapshot");
@@ -86,6 +87,7 @@ export interface WalletCard {
   providerId: string;
   providerInstanceId: string | null;
   name: string;
+  endpointOverride: string | null;
   configured: boolean;
   enabled: boolean;
   source: "catalog" | "asset" | string;
@@ -95,7 +97,15 @@ export interface WalletCard {
   inputTokens: number;
   outputTokens: number;
   estimatedCostMicros: number | null;
+  referenceCount: number;
 }
+
+export interface DirectEndpointItem {
+  id: string; name: string; alias: string; assetId: string; assetName: string;
+  enabled: boolean; tokenConfigured: boolean; baseUrl: string; publicModels: string[]; requestCount: number;
+}
+
+export interface WalletAssetImpact { directEndpoints: string[]; canvases: string[]; }
 
 export interface ProjectTree {
   projects: Record<string, {
@@ -124,9 +134,8 @@ export interface WorkflowGraph {
 export type CanvasTab = "overview" | "workflow" | "routes" | "publisher" | "docs" | "runs";
 
 export interface WorkspaceUiState {
-  schemaVersion: 3;
+  schemaVersion: 4;
   themePreference: ThemePreference;
-  viewMode: ViewMode;
   lastPage: string;
   workspaceIntent: WorkspaceIntent;
   shell: {
@@ -169,7 +178,6 @@ export interface CanvasSnapshot {
 
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
-export type ViewMode = "simple" | "professional";
 export type WorkspaceIntent = "manage_apis" | "unified_endpoint" | "reliability" | "import";
 
 export interface PublisherConnectionTest {
@@ -218,7 +226,19 @@ export interface ExecutionTrace {
 
 export const getProviderCatalog = () => invoke<ProviderCatalogItem[]>("provider_catalog");
 export const getWalletGallery = () => invoke<WalletCard[]>("wallet_gallery");
-export const createWalletAsset = (input: { providerId: string; name: string; endpointOverride?: string; monthlyBudgetMicros?: number; currency?: string }) => invoke<WalletCard>("create_wallet_asset", { input });
+export const createWalletAsset = (input: { providerId: string; name: string; endpointOverride?: string; monthlyBudgetMicros?: number; currency?: string; apiKey?: string }) => invoke<WalletCard>("create_wallet_asset", { input });
+export const updateWalletAsset = (input: { assetId: string; name: string; endpointOverride?: string; enabled: boolean; apiKey?: string; monthlyBudgetMicros?: number; currency?: string }) => invoke<WalletCard[]>("update_wallet_asset", { input });
+export const deleteWalletAsset = (assetId: string) => invoke<WalletCard[]>("delete_wallet_asset", { assetId });
+export const getWalletAssetImpact = (assetId: string) => invoke<WalletAssetImpact>("wallet_asset_impact", { assetId });
+export const probeWalletAsset = (assetId: string) => invoke<InspectionReport>("probe_wallet_asset", { assetId });
+export const getDirectEndpoints = () => invoke<DirectEndpointItem[]>("direct_endpoints");
+export const createDirectEndpoint = (input: { endpointId?: string; assetId: string; name: string; alias: string; token: string; publicModel: string; upstreamModel: string; timeoutMs?: number; maxRetries?: number; monthlyBudgetMicros?: number; currency?: string }) => invoke<DirectEndpointItem[]>("create_direct_endpoint", { input });
+export const updateDirectEndpoint = (input: { endpointId: string; assetId: string; name: string; alias: string; token: string; publicModel: string; upstreamModel: string; timeoutMs?: number; maxRetries?: number; monthlyBudgetMicros?: number; currency?: string }) => invoke<DirectEndpointItem[]>("update_direct_endpoint", { input });
+export const deleteDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("delete_direct_endpoint", { input: { endpointId } });
+export const startDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("start_direct_endpoint", { input: { endpointId } });
+export const pauseDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("pause_direct_endpoint", { input: { endpointId } });
+export const testDirectEndpoint = (endpointId: string) => invoke<PublisherConnectionTest>("test_direct_endpoint", { endpointId });
+export const getDirectEndpointTemplates = (endpointId: string) => invoke<CodeTemplate[]>("direct_endpoint_templates", { endpointId });
 export const getProjectTree = () => invoke<{ projects: ProjectTree }>("project_tree").then((result) => result.projects);
 export const createProject = (name: string) => invoke<{ projects: ProjectTree }>("create_project", { input: { name } }).then((result) => result.projects);
 export const renameProject = (projectId: string, name: string) => invoke<{ projects: ProjectTree }>("rename_project", { input: { projectId, name } }).then((result) => result.projects);

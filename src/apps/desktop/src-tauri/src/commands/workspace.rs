@@ -80,7 +80,7 @@ fn read_ui_state(repository: &WorkspaceRepository) -> WorkspaceUiState {
 }
 
 fn sanitize_ui_state(state: &mut WorkspaceUiState) -> Result<(), String> {
-    if state.schema_version == 1 || state.schema_version == 2 {
+    if matches!(state.schema_version, 1 | 2 | 3) {
         state.schema_version = UI_STATE_SCHEMA_VERSION;
         state.shell.left_width = 248;
         state.shell.right_width = 320;
@@ -94,9 +94,8 @@ fn sanitize_ui_state(state: &mut WorkspaceUiState) -> Result<(), String> {
     if !matches!(
         state.last_page.as_str(),
         "overview"
-            | "assets"
+            | "direct"
             | "workflows"
-            | "publishers"
             | "runs"
             | "notifications"
             | "templates"
@@ -177,6 +176,7 @@ async fn initialize_workspace(
         open_control_plane(&state.repository, &state.secret_store).map_err(safe_error)?;
     *state.control_plane.lock().await = Some(control_plane);
     *state.startup_error.lock().await = None;
+    let _ = restart_gateway(&state).await;
 
     snapshot(&state).await
 }
@@ -199,24 +199,31 @@ async fn run_canvas(
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
     let mut workspace = load_workspace(&state.repository)?;
+    let graph = workspace
+        .projects
+        .projects
+        .get(&input.project_id)
+        .and_then(|project| project.canvases.get(&input.canvas_id))
+        .ok_or_else(|| "Canvas not found".to_owned())?
+        .graph
+        .clone();
+    validate_canvas_domain_graph(&workspace, &graph, true)?;
     let canvas = workspace
         .projects
         .projects
         .get_mut(&input.project_id)
         .and_then(|project| project.canvases.get_mut(&input.canvas_id))
         .ok_or_else(|| "Canvas not found".to_owned())?;
-    canvas.graph.validate().map_err(|error| error.message)?;
     let publisher_id = canvas.publisher_id.clone().ok_or_else(|| {
         "Configure a local Publisher for this canvas before running it".to_owned()
     })?;
     canvas.applied_graph = Some(canvas.graph.clone());
     canvas.applied_revision = canvas.draft_revision;
     workspace.validate().map_err(|error| error.message)?;
+    workspace.runtime_state.enabled_publishers.insert(publisher_id);
     state.repository.save(&workspace).map_err(safe_error)?;
-    with_plane(&state, |plane| async move {
-        plane.start_publisher(&publisher_id).await.map(|_| ())
-    })
-    .await?;
+    reload_control_plane(&state).await?;
+    restart_gateway(&state).await?;
     snapshot(&state).await
 }
 
@@ -225,7 +232,7 @@ async fn stop_canvas(
     input: CanvasActionInput,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
-    let workspace = load_workspace(&state.repository)?;
+    let mut workspace = load_workspace(&state.repository)?;
     let publisher_id = workspace
         .projects
         .projects
@@ -235,10 +242,10 @@ async fn stop_canvas(
         .publisher_id
         .clone()
         .ok_or_else(|| "This canvas has not been published".to_owned())?;
-    with_plane(&state, |plane| async move {
-        plane.stop_publisher(&publisher_id).await.map(|_| ())
-    })
-    .await?;
+    workspace.runtime_state.enabled_publishers.remove(&publisher_id);
+    state.repository.save(&workspace).map_err(safe_error)?;
+    reload_control_plane(&state).await?;
+    restart_gateway(&state).await?;
     snapshot(&state).await
 }
 
@@ -247,7 +254,7 @@ async fn pause_canvas(
     input: CanvasActionInput,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
-    let workspace = load_workspace(&state.repository)?;
+    let mut workspace = load_workspace(&state.repository)?;
     let canvas = workspace
         .projects
         .projects
@@ -258,10 +265,10 @@ async fn pause_canvas(
         .publisher_id
         .clone()
         .ok_or_else(|| "This canvas has not been published".to_owned())?;
-    with_plane(&state, |plane| async move {
-        plane.pause_publisher(&publisher_id).await.map(|_| ())
-    })
-    .await?;
+    workspace.runtime_state.enabled_publishers.remove(&publisher_id);
+    state.repository.save(&workspace).map_err(safe_error)?;
+    reload_control_plane(&state).await?;
+    restart_gateway(&state).await?;
     snapshot(&state).await
 }
 

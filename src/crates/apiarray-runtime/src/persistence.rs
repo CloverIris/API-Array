@@ -160,6 +160,8 @@ mod tests {
                 edges: Vec::new(),
             },
             wallet: ApiWallet::default(),
+            direct_endpoints: BTreeMap::new(),
+            gateway: apiarray_core::workspace::DirectGateway::default(),
             projects: WorkspaceProjects::default(),
             ui: Value::Null,
             templates: BTreeMap::new(),

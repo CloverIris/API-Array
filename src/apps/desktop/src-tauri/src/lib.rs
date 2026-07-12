@@ -18,7 +18,7 @@ use apiarray_core::{
     secret::SecretRef,
     templates::{CodeTemplate, TemplateContext, generate_templates},
     workspace::{
-        ApiAsset, ApiWallet, BillingPolicy, Canvas, Project, ProjectFolder,
+        ApiAsset, ApiWallet, BillingPolicy, Canvas, DirectEndpoint, DirectModelMapping, Project, ProjectFolder,
         WORKSPACE_SCHEMA_VERSION, WorkspaceLoad, WorkspacePackage, WorkspaceProjects,
         WorkspaceRuntimeState, load_workspace_json,
     },
@@ -35,10 +35,11 @@ use apiarray_runtime::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{
-    AppHandle, Manager, State, WebviewWindow, WindowEvent,
-    menu::{Menu, MenuItem},
+    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
+use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tokio::sync::Mutex;
 
 include!("state.rs");
@@ -136,9 +137,8 @@ mod tests {
 
         sanitize_ui_state(&mut state).expect("version one state migrates");
 
-        assert_eq!(state.schema_version, 3);
+        assert_eq!(state.schema_version, 4);
         assert_eq!(state.theme_preference, super::ThemePreference::System);
-        assert_eq!(state.view_mode, super::ViewMode::Simple);
         assert!(!state.shell.right_inspector_open);
         assert!(!state.shell.right_inspector_pinned);
     }

@@ -327,6 +327,11 @@ impl CompiledRuntime {
             .map(|publisher| &publisher.config)
     }
 
+    #[must_use]
+    pub fn public_models(&self, publisher_id: &str) -> Vec<String> {
+        self.config.publishers.get(publisher_id).map_or_else(Vec::new, |publisher| publisher.routes.iter().map(|route| route.public_model.clone()).collect())
+    }
+
     /// 将 Publisher 请求编译为一个不包含明文密钥的上游 Transport Plan。
     ///
     /// # Errors

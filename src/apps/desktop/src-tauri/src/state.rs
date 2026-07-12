@@ -1,7 +1,7 @@
 const CREDENTIAL_SERVICE: &str = "API ARRAY";
 const DEFAULT_WORKSPACE_ID: &str = "default";
 const UI_STATE_FILE: &str = "ui-state.json";
-const UI_STATE_SCHEMA_VERSION: u32 = 3;
+const UI_STATE_SCHEMA_VERSION: u32 = 4;
 
 struct DesktopState {
     repository: WorkspaceRepository,
@@ -10,6 +10,8 @@ struct DesktopState {
     inspection_reports: InspectionRepository,
     paused_probes: Mutex<BTreeSet<String>>,
     control_plane: Mutex<Option<ControlPlane>>,
+    gateway: Mutex<Option<apiarray_runtime::gateway::LocalGateway>>,
+    gateway_error: Mutex<Option<String>>,
     startup_error: Mutex<Option<String>>,
 }
 
@@ -19,8 +21,6 @@ struct WorkspaceUiState {
     schema_version: u32,
     #[serde(default)]
     theme_preference: ThemePreference,
-    #[serde(default)]
-    view_mode: ViewMode,
     #[serde(default = "default_page")]
     last_page: String,
     #[serde(default)]
@@ -47,14 +47,6 @@ enum ThemePreference {
     System,
     Light,
     Dark,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ViewMode {
-    #[default]
-    Simple,
-    Professional,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,7 +101,6 @@ impl Default for WorkspaceUiState {
         Self {
             schema_version: UI_STATE_SCHEMA_VERSION,
             theme_preference: ThemePreference::System,
-            view_mode: ViewMode::Simple,
             last_page: default_page(),
             workspace_intent: WorkspaceIntent::ManageApis,
             shell: ShellUiState {

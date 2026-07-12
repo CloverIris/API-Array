@@ -5,6 +5,7 @@
 pub mod control;
 pub mod env;
 pub mod error;
+pub mod gateway;
 pub mod inspection;
 pub mod persistence;
 pub mod publisher;

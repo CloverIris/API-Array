@@ -9,6 +9,7 @@
     "test": "vitest run",
     "tauri": "node ./node_modules/@tauri-apps/cli/tauri.js",
     "tauri:dev": "npm.cmd run dev",
+    "build:desktop:debug": "npm.cmd run build && node ./node_modules/@tauri-apps/cli/tauri.js build --debug",
     "build:app": "node ./node_modules/@tauri-apps/cli/tauri.js build",
     "tauri:build": "npm.cmd run build:app",
     "tauri:build:debug": "node ./node_modules/@tauri-apps/cli/tauri.js build --debug"

@@ -19,9 +19,8 @@ export type DesktopRoute =
   | { kind: "canvas"; projectId: string; canvasId: string; tab: CanvasTab };
 
 export const defaultUiState: WorkspaceUiState = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   themePreference: "system",
-  viewMode: "simple",
   lastPage: "overview",
   workspaceIntent: "manage_apis",
   shell: { leftSidebarCollapsed: false, rightInspectorOpen: false, rightInspectorPinned: false, leftWidth: 248, rightWidth: 320 },
@@ -63,6 +62,14 @@ export function useDesktopWorkspaceController() {
     });
   }, []);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event").then(({ listen }) => listen<string>("desktop:navigate", (event) => {
+      if (isAppPage(event.payload)) updateUiState((current) => ({ ...current, lastPage: event.payload, selectedProjectId: null, selectedCanvasId: null }));
+    })).then((dispose) => { unlisten = dispose; }).catch(() => undefined);
+    return () => unlisten?.();
+  }, [updateUiState]);
+
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
   const openGlobal = useCallback((page: AppPage) => updateUiState((current) => ({ ...current, lastPage: page, selectedProjectId: null, selectedCanvasId: null })), [updateUiState]);
@@ -85,9 +92,9 @@ function normalizeProjectTree(tree: ProjectTree): ProjectTree {
 }
 
 function normalizeUiState(state: WorkspaceUiState): WorkspaceUiState {
-  return { ...defaultUiState, ...state, schemaVersion: 3, shell: { ...defaultUiState.shell, ...(state?.shell ?? {}) }, workflows: state?.workflows ?? {}, selectedProjectId: state?.selectedProjectId ?? null, selectedCanvasId: state?.selectedCanvasId ?? null, expandedProjectIds: Array.isArray(state?.expandedProjectIds) ? state.expandedProjectIds : [], expandedFolderIds: Array.isArray(state?.expandedFolderIds) ? state.expandedFolderIds : [], canvasTabs: state?.canvasTabs ?? {} };
+  return { ...defaultUiState, ...state, schemaVersion: 4, shell: { ...defaultUiState.shell, ...(state?.shell ?? {}) }, workflows: state?.workflows ?? {}, selectedProjectId: state?.selectedProjectId ?? null, selectedCanvasId: state?.selectedCanvasId ?? null, expandedProjectIds: Array.isArray(state?.expandedProjectIds) ? state.expandedProjectIds : [], expandedFolderIds: Array.isArray(state?.expandedFolderIds) ? state.expandedFolderIds : [], canvasTabs: state?.canvasTabs ?? {} };
 }
 
 function toggle(items: string[], id: string) { return items.includes(id) ? items.filter((item) => item !== id) : [...items, id]; }
 function unique(items: string[]) { return [...new Set(items)]; }
-function isAppPage(value: string): value is AppPage { return ["overview", "assets", "workflows", "publishers", "runs", "notifications", "templates", "settings"].includes(value); }
+function isAppPage(value: string): value is AppPage { return ["overview", "direct", "workflows", "runs", "notifications", "templates", "settings"].includes(value); }

@@ -30,6 +30,7 @@ import {
   saveCanvasGraph,
   validateWorkflowGraph,
   type WorkflowGraph,
+  type WalletCard,
   type WorkflowValidationResult,
   type WorkspaceUiState,
 } from "../../lib/desktop";
@@ -37,6 +38,7 @@ import { EmptyPage, readError } from "../shared";
 import { ApiArrayNode } from "./ApiArrayNode";
 import { WorkflowEdge } from "./WorkflowEdge";
 import { WorkflowToolbar, type SaveState } from "./WorkflowToolbar";
+import type { WorkflowTemplate } from "./NodePalette";
 import { WorkflowValidationPanel } from "./WorkflowValidationPanel";
 import {
   canvasToGraph,
@@ -67,11 +69,11 @@ const ariaLabels = {
 
 type HistoryEntry = { nodes: CanvasNode[]; edges: CanvasEdge[] };
 
-export function WorkflowCanvas({ projectId, canvasId, uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { projectId: string; canvasId: string; uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
-  return <ReactFlowProvider><WorkflowCanvasInner projectId={projectId} canvasId={canvasId} uiState={uiState} publisherRunning={publisherRunning} onUiState={onUiState} onSelection={onSelection} onGraphChange={onGraphChange} /></ReactFlowProvider>;
+export function WorkflowCanvas({ projectId, canvasId, wallet, uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { projectId: string; canvasId: string; wallet: WalletCard[]; uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
+  return <ReactFlowProvider><WorkflowCanvasInner projectId={projectId} canvasId={canvasId} wallet={wallet} uiState={uiState} publisherRunning={publisherRunning} onUiState={onUiState} onSelection={onSelection} onGraphChange={onGraphChange} /></ReactFlowProvider>;
 }
 
-function WorkflowCanvasInner({ projectId, canvasId, uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { projectId: string; canvasId: string; uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
+function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRunning, onUiState, onSelection, onGraphChange }: { projectId: string; canvasId: string; wallet: WalletCard[]; uiState: WorkspaceUiState; publisherRunning: boolean; onUiState: (next: WorkspaceUiState) => void; onSelection: (selected: SelectedWorkflowItem) => void; onGraphChange?: (graph: WorkflowGraph) => void }) {
   const [graph, setGraph] = useState<WorkflowGraph | null>(null);
   const [nodes, setNodes] = useState<CanvasNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
@@ -112,6 +114,7 @@ function WorkflowCanvasInner({ projectId, canvasId, uiState, publisherRunning, o
   const toggleNode = useCallback(async (id: string) => {
     const current = nodes.find((item) => item.id === id);
     if (!current) return;
+    if (current.data.model.kind === "publisher") { setLocalError("Canvas 总输出器不能停用。"); return; }
     if (current.data.model.enabled && graph?.nodes.some((item) => item.id === id)) {
       const impact = await getCanvasNodeImpact(projectId, canvasId, id).catch(() => null);
       const detail = impact
@@ -158,11 +161,42 @@ function WorkflowCanvasInner({ projectId, canvasId, uiState, publisherRunning, o
   }, [connectionError, markDirty, nodes, snapshotHistory]);
 
   const addNode = (kind: WorkflowNode["kind"]) => {
+    if (kind === "publisher" && nodes.some((node) => node.data.model.kind === "publisher")) { setLocalError("每个 Canvas 只能有一个总输出器。"); return; }
     snapshotHistory();
     const model = newWorkflowNode(kind, nodes.length);
     const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
     setNodes((current) => [...current, { id: model.id, type: "apiArray", position, data: { model }, ariaLabel: `${kind} 节点：${model.name}` }]);
     if (graph) setGraph({ ...graph, nodes: [...graph.nodes, model] });
+    markDirty();
+  };
+
+  const addAsset = (asset: WalletCard) => {
+    if (asset.source !== "asset" || !asset.providerInstanceId) { setLocalError("请先在 API 钱包中完成资产配置。"); return; }
+    snapshotHistory();
+    const model = newWorkflowNode("adapter", nodes.length);
+    model.name = asset.name;
+    model.config = { asset_id: asset.id, provider_instance_id: asset.providerInstanceId, upstream_model: "default", public_model: "default", secret_ready: asset.configured };
+    const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+    setNodes((current) => [...current, { id: model.id, type: "apiArray", position, data: { model }, ariaLabel: `钱包资产节点：${asset.name}` }]);
+    setLocalError(asset.configured ? null : `${asset.name} 尚未配置 Key；可以保存草稿，但运行会被阻止。`);
+    markDirty();
+  };
+
+  const applyTemplate = (template: WorkflowTemplate) => {
+    const usable = wallet.filter((asset) => asset.source === "asset" && asset.providerInstanceId);
+    const required = template === "single" ? 1 : 2;
+    if (usable.length < required) { setLocalError(`该模板至少需要 ${required} 个钱包资产。`); return; }
+    snapshotHistory();
+    const publisher = nodes.find((node) => node.data.model.kind === "publisher")?.data.model ?? newWorkflowNode("publisher", 0);
+    const adapters = usable.slice(0, required).map((asset, index) => { const node = newWorkflowNode("adapter", index + 1); node.name = asset.name; node.config = { asset_id: asset.id, provider_instance_id: asset.providerInstanceId, upstream_model: "default", public_model: "default", priority: index, secret_ready: asset.configured }; return node; });
+    const router = newWorkflowNode("router", required + 1); router.config = { strategy: "priority_failover", timeout_ms: 30000, max_retries: 2, failover_on: ["timeout", "rate_limited", "network"] };
+    const extra = template === "guarded" ? [newWorkflowNode("probe", required + 2), newWorkflowNode("guard", required + 3)] : [];
+    if (extra[0]) extra[0].config = { safe_only: true, interval_seconds: 300, failure_threshold: 3 };
+    if (extra[1]) extra[1].config = { budget_warning_percent: 80, rate_limit_per_minute: 60, allowed_models: ["default"] };
+    const models = template === "single" ? [publisher, ...adapters] : [publisher, ...adapters, router, ...extra];
+    setNodes(graphToCanvas({ ...graph!, nodes: models, edges: [] }, uiState).nodes);
+    setEdges([]);
+    setLocalError("模板已创建。请连接类型化端口并完成配置后保存草稿。");
     markDirty();
   };
 
@@ -184,13 +218,14 @@ function WorkflowCanvasInner({ projectId, canvasId, uiState, publisherRunning, o
   };
   const selectionChanged = useCallback(({ nodes: selectedNodes, edges: selectedEdges }: OnSelectionChangeParams<CanvasNode, CanvasEdge>) => {
     const node = selectedNodes[0];
-    if (node) { onSelection({ kind: "node", node: node.data.model }); return; }
+    if (node) { onSelection({ kind: "node", node: node.data.model, wallet, onUpdate: updateNode }); return; }
     const edge = selectedEdges[0];
     if (edge && graph) { const model = canvasToGraph(graph, nodes, edges).edges.find((item) => item.id === edge.id); if (model) { onSelection({ kind: "edge", edge: model }); return; } }
     onSelection(null);
-  }, [edges, graph, nodes, onSelection]);
+  }, [edges, graph, nodes, onSelection, updateNode, wallet]);
   const beforeDelete = async ({ nodes: deletingNodes }: { nodes: CanvasNode[]; edges: CanvasEdge[] }) => {
     if (!deletingNodes.length) return true;
+    if (deletingNodes.some((node) => node.data.model.kind === "publisher")) { setLocalError("Canvas 总输出器受保护，不能删除。"); return false; }
     const impacts = await Promise.all(deletingNodes.filter((node) => graph?.nodes.some((item) => item.id === node.id)).map((node) => getCanvasNodeImpact(projectId, canvasId, node.id).catch(() => null)));
     const publishers = [...new Set(impacts.flatMap((impact) => impact?.affected_publishers ?? []))];
     const downstream = [...new Set(impacts.flatMap((impact) => impact?.downstream_nodes ?? []))];
@@ -206,11 +241,11 @@ function WorkflowCanvasInner({ projectId, canvasId, uiState, publisherRunning, o
   return <section className="workflow-editor">
     <div className="workflow-heading"><div><p className="eyebrow">Workflow Graph</p><h2>{graph.id}</h2></div><div className="workflow-heading-badges"><Badge color="info" variant="soft">{nodes.length} 个节点 · {edges.length} 条连接</Badge>{publisherRunning ? <Badge color="warning" variant="soft">运行中 · 编辑为草稿</Badge> : null}</div></div>
     <WorkflowValidationPanel result={validation} localError={localError} />
-    <WorkflowToolbar saveState={saveState} canUndo={history.current.length > 0} canRedo={future.current.length > 0} onAdd={addNode} onUndo={undo} onRedo={redo} onLayout={autoLayout} onFit={() => void fitView({ padding: 0.18, duration: 250 })} onValidate={() => void validate()} onSave={() => void save()} />
+    <WorkflowToolbar wallet={wallet} hasPublisher={nodes.some((node) => node.data.model.kind === "publisher")} saveState={saveState} canUndo={history.current.length > 0} canRedo={future.current.length > 0} onAddAsset={addAsset} onAddControl={addNode} onApplyTemplate={applyTemplate} onUndo={undo} onRedo={redo} onLayout={autoLayout} onFit={() => void fitView({ padding: 0.18, duration: 250 })} onValidate={() => void validate()} onSave={() => void save()} />
     <div className="workflow-canvas" aria-label="API ARRAY 节点编排画布">
       <ReactFlow nodes={displayedNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={connect} isValidConnection={(connection) => !connectionError(connection)} onMoveEnd={moveEnd} onNodeDragStop={nodeDragStop} onSelectionChange={selectionChanged} onBeforeDelete={beforeDelete} defaultViewport={uiState.workflows[graph.id]?.viewport} fitView={!uiState.workflows[graph.id]} nodesFocusable edgesFocusable deleteKeyCode={["Backspace", "Delete"]} multiSelectionKeyCode={["Control", "Meta"]} ariaLabelConfig={ariaLabels} minZoom={0.2} maxZoom={2.5} snapToGrid snapGrid={[16, 16]}>
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-        {!nodes.length ? <Panel position="top-center" className="canvas-empty"><strong>从基础工作流开始</strong><span>创建 Adapter、Router 与 Publisher，或先通过简洁向导创建本地端点。</span><div><Button color="primary" size="sm" onClick={() => addNode("adapter")}>添加 Adapter</Button><Button color="secondary" variant="soft" size="sm" onClick={() => addNode("router")}>添加 Router</Button></div></Panel> : null}
+        {!nodes.length ? <Panel position="top-center" className="canvas-empty"><strong>从 API 钱包开始编组</strong><span>通过“添加节点”选择钱包资产，或应用一套基础编组模板。</span><div><Button color="secondary" variant="soft" size="sm" onClick={() => addNode("router")}>添加路由器</Button></div></Panel> : null}
         <MiniMap pannable zoomable nodeColor={(node) => (node as CanvasNode).data.model.enabled ? "var(--app-port-request)" : "var(--color-text-tertiary)"} />
         <Controls showInteractive={false} />
       </ReactFlow>

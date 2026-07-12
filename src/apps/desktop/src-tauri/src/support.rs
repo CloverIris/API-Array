@@ -53,10 +53,17 @@ async fn snapshot(state: &DesktopState) -> Result<DesktopSnapshot, String> {
         None => None,
     };
 
+    let workspace = load_workspace(&state.repository).ok();
     Ok(DesktopSnapshot {
         initialized: control.is_some(),
         startup_error,
         control,
+        gateway: DesktopGatewaySnapshot {
+            running: state.gateway.lock().await.is_some(),
+            base_url: workspace.as_ref().map_or_else(|| "http://127.0.0.1:7480".to_owned(), |workspace| format!("http://{}:{}", workspace.gateway.listen_address, workspace.gateway.port)),
+            entry_count: workspace.as_ref().map_or(0, |workspace| workspace.direct_endpoints.values().filter(|endpoint| endpoint.enabled).count() + workspace.runtime_state.enabled_publishers.len()),
+            error: state.gateway_error.lock().await.clone(),
+        },
     })
 }
 
@@ -87,6 +94,8 @@ fn empty_workspace(name: &str) -> WorkspacePackage {
             edges: Vec::new(),
         },
         wallet: ApiWallet::default(),
+        direct_endpoints: BTreeMap::new(),
+        gateway: apiarray_core::workspace::DirectGateway::default(),
         projects: default_projects(),
         ui: Value::Null,
         templates: BTreeMap::new(),
@@ -119,6 +128,61 @@ fn default_projects() -> WorkspaceProjects {
     WorkspaceProjects {
         projects: BTreeMap::from([(project.id.clone(), project)]),
     }
+}
+
+fn direct_endpoint_url(workspace: &WorkspacePackage, alias: &str) -> String {
+    format!("http://{}:{}/direct/{alias}/v1", workspace.gateway.listen_address, workspace.gateway.port)
+}
+
+async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
+    if let Some(previous) = state.gateway.lock().await.take() {
+        previous.stop().await;
+    }
+    let workspace = load_workspace(&state.repository)?;
+    let entries = gateway_entries(&workspace, &state.repository, &state.secret_store)?;
+    let address: std::net::SocketAddr = format!("{}:{}", workspace.gateway.listen_address, workspace.gateway.port)
+        .parse().map_err(|_| "统一审计网关地址无效。".to_owned())?;
+    match apiarray_runtime::gateway::LocalGateway::start(address, entries).await {
+        Ok(gateway) => {
+            eprintln!("API ARRAY LocalGateway listening on {}", gateway.address());
+            *state.gateway.lock().await = Some(gateway);
+            *state.gateway_error.lock().await = None;
+            Ok(())
+        }
+        Err(error) => {
+            let message = safe_error(error);
+            *state.gateway_error.lock().await = Some(message.clone());
+            Err(message)
+        }
+    }
+}
+
+fn gateway_entries(workspace: &WorkspacePackage, repository: &WorkspaceRepository, store: &Arc<WindowsCredentialStore>) -> Result<Vec<apiarray_runtime::gateway::GatewayEntry>, String> {
+    let mut runtime = workspace.runtime.clone();
+    let mut prefixes = Vec::new();
+    for endpoint in workspace.direct_endpoints.values().filter(|endpoint| endpoint.enabled) {
+        let Some(asset) = workspace.wallet.assets.get(&endpoint.asset_id) else { continue; };
+        let Some(provider) = runtime.providers.get(&asset.provider_instance_id) else { continue; };
+        if !asset.enabled || !provider.enabled || !store.contains(&endpoint.token_ref) { continue; }
+        let id = format!("direct:{}", endpoint.id);
+        runtime.publishers.insert(id.clone(), RuntimePublisher {
+            config: apiarray_core::publisher::PublisherConfig { schema_version: SCHEMA_VERSION, id: id.clone(), name: endpoint.name.clone(), listen_address: "127.0.0.1".parse().map_err(|_| "回环地址无效。")?, port: workspace.gateway.port, base_path: "/v1".to_owned(), require_token: true, token_ref: Some(endpoint.token_ref.clone()) },
+            routes: endpoint.models.iter().map(|mapping| ModelRoute { public_model: mapping.public_model.clone(), policy: RoutePolicy { schema_version: SCHEMA_VERSION, id: format!("{id}-{}-route", mapping.public_model), timeout_ms: endpoint.timeout_ms, max_retries: endpoint.max_retries, failover_on: HashSet::from([StandardError::ProviderTimeout, StandardError::NetworkUnreachable, StandardError::RateLimited]) }, upstreams: vec![UpstreamRoute { id: format!("{id}-{}-upstream", mapping.public_model), provider_instance: asset.provider_instance_id.clone(), upstream_model: mapping.upstream_model.clone(), priority: 0, enabled: true, conditions: Vec::new() }] }).collect(),
+        });
+        prefixes.push((format!("/direct/{}", endpoint.alias), id));
+    }
+    for project in workspace.projects.projects.values() {
+        for canvas in project.canvases.values() {
+            if let Some(publisher_id) = &canvas.publisher_id && workspace.runtime_state.enabled_publishers.contains(publisher_id) {
+                prefixes.push((format!("/canvas/{}", canvas.id), publisher_id.clone()));
+            }
+        }
+    }
+    let compiled = Arc::new(runtime.compile().map_err(|error| error.message)?);
+    let audit: Arc<dyn apiarray_runtime::resilience::AuditSink> = Arc::new(JsonlAuditSink::open(audit_path(repository)).map_err(safe_error)?);
+    let resolver: Arc<dyn apiarray_runtime::secret::SecretResolver> = Arc::new(StoreSecretResolver::new(store.clone()));
+    let transport = apiarray_runtime::transport::HttpExecutor::new(TransportConfig::default()).map_err(safe_error)?;
+    Ok(prefixes.into_iter().map(|(prefix, publisher_id)| apiarray_runtime::gateway::GatewayEntry { prefix, state: apiarray_runtime::publisher::PublisherState::with_audit(Arc::clone(&compiled), publisher_id, transport.clone(), Arc::clone(&resolver), Arc::clone(&audit)) }).collect())
 }
 
 fn new_canvas_graph(id: &str) -> WorkflowGraph {
@@ -179,6 +243,7 @@ fn ensure_wallet_asset(workspace: &mut WorkspacePackage, provider_instance_id: &
             provider_instance_id: provider_instance_id.to_owned(),
             provider_id: provider.manifest.provider.id.clone(),
             name,
+            enabled: false,
             billing: BillingPolicy::default(),
         },
     );
