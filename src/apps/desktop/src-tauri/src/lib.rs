@@ -141,10 +141,22 @@ mod tests {
 
         sanitize_ui_state(&mut state).expect("version one state migrates");
 
-        assert_eq!(state.schema_version, 5);
+        assert_eq!(state.schema_version, 6);
         assert_eq!(state.theme_preference, super::ThemePreference::System);
         assert!(!state.shell.right_inspector_open);
         assert!(!state.shell.right_inspector_pinned);
+    }
+
+    #[test]
+    fn legacy_instances_page_is_migrated_to_home() {
+        let mut state = WorkspaceUiState::default();
+        state.schema_version = 5;
+        state.last_page = "instances".to_owned();
+
+        sanitize_ui_state(&mut state).expect("legacy page migrates");
+
+        assert_eq!(state.schema_version, 6);
+        assert_eq!(state.last_page, "home");
     }
 
     #[test]

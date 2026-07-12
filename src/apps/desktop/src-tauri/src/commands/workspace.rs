@@ -45,7 +45,7 @@ fn read_ui_state(repository: &impl RepositoryAccess) -> WorkspaceUiState {
 }
 
 fn sanitize_ui_state(state: &mut WorkspaceUiState) -> Result<(), String> {
-    if matches!(state.schema_version, 1 | 2 | 3 | 4) {
+    if matches!(state.schema_version, 1 | 2 | 3 | 4 | 5) {
         state.schema_version = UI_STATE_SCHEMA_VERSION;
         state.shell.left_width = 248;
         state.shell.right_width = 320;
@@ -54,6 +54,7 @@ fn sanitize_ui_state(state: &mut WorkspaceUiState) -> Result<(), String> {
         state.last_page = match state.last_page.as_str() {
             "overview" => "wallet".to_owned(),
             "workflows" => "compositions".to_owned(),
+            "instances" => "home".to_owned(),
             _ => state.last_page.clone(),
         };
     } else if state.schema_version != UI_STATE_SCHEMA_VERSION {
@@ -63,7 +64,7 @@ fn sanitize_ui_state(state: &mut WorkspaceUiState) -> Result<(), String> {
     state.shell.right_width = state.shell.right_width.clamp(296, 420);
     if !matches!(
         state.last_page.as_str(),
-        "instances"
+        "home"
             | "wallet"
             | "direct"
             | "compositions"

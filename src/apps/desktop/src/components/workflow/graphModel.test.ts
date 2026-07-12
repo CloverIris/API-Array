@@ -13,9 +13,9 @@ const graph: WorkflowGraph = {
 };
 
 const uiState: WorkspaceUiState = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   themePreference: "system",
-  lastPage: "instances",
+  lastPage: "home",
   workspaceIntent: "manage_apis",
   shell: { leftSidebarCollapsed: false, rightInspectorOpen: true, rightInspectorPinned: true, leftWidth: 230, rightWidth: 310 },
   workflows: { main: { viewport: { x: 10, y: 20, zoom: 1.2 }, nodePositions: { source: { x: 444, y: 222 } }, collapsedGroups: [] } },

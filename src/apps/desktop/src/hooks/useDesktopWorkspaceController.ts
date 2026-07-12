@@ -3,13 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getDesktopSnapshot,
+  getControlCenterSnapshot,
   getProjectTree,
+  getWalletGallery,
   getWorkspaceUiState,
   saveWorkspaceUiState,
   type CanvasTab,
   type DesktopSnapshot,
+  type ControlCenterSnapshot,
   type ProjectTree,
   type WorkspaceUiState,
+  type WalletCard,
 } from "../lib/desktop";
 import type { AppPage } from "../components/navigation";
 import { readError } from "../components/shared";
@@ -19,9 +23,9 @@ export type DesktopRoute =
   | { kind: "canvas"; projectId: string; canvasId: string; tab: CanvasTab };
 
 export const defaultUiState: WorkspaceUiState = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   themePreference: "system",
-  lastPage: "instances",
+  lastPage: "home",
   workspaceIntent: "manage_apis",
   shell: { leftSidebarCollapsed: false, rightInspectorOpen: false, rightInspectorPinned: false, leftWidth: 248, rightWidth: 320 },
   workflows: {},
@@ -36,6 +40,8 @@ export function useDesktopWorkspaceController() {
   const [snapshot, setSnapshot] = useState<DesktopSnapshot | null>(null);
   const [projectTree, setProjectTree] = useState<ProjectTree>({ projects: {} });
   const [uiState, setUiState] = useState<WorkspaceUiState>(defaultUiState);
+  const [controlCenter, setControlCenter] = useState<ControlCenterSnapshot | null>(null);
+  const [wallet, setWallet] = useState<WalletCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -43,15 +49,21 @@ export function useDesktopWorkspaceController() {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const [nextSnapshot, nextTree] = await Promise.all([getDesktopSnapshot(), getProjectTree()]);
+      const [nextSnapshot, nextTree, nextWallet] = await Promise.all([getDesktopSnapshot(), getProjectTree(), getWalletGallery()]);
       setSnapshot(nextSnapshot);
       setProjectTree(normalizeProjectTree(nextTree));
+      setWallet(nextWallet.filter((item) => item.source === "asset"));
     } catch (reason) { setError(readError(reason)); } finally { setLoading(false); }
   }, []);
 
+  const refreshControlCenter = useCallback(async () => {
+    try { setControlCenter(await getControlCenterSnapshot()); }
+    catch { setControlCenter(null); }
+  }, []);
+
   useEffect(() => {
-    void Promise.all([refresh(), getWorkspaceUiState().then((next) => setUiState(normalizeUiState(next))).catch(() => undefined)]);
-  }, [refresh]);
+    void Promise.all([refresh(), refreshControlCenter(), getWorkspaceUiState().then((next) => setUiState(normalizeUiState(next))).catch(() => undefined)]);
+  }, [refresh, refreshControlCenter]);
 
   const updateUiState = useCallback((updater: (current: WorkspaceUiState) => WorkspaceUiState) => {
     setUiState((current) => {
@@ -70,6 +82,13 @@ export function useDesktopWorkspaceController() {
     return () => unlisten?.();
   }, [updateUiState]);
 
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event").then(({ listen }) => listen("desktop:instances-changed", () => void refreshControlCenter())).then((dispose) => { unlisten = dispose; }).catch(() => undefined);
+    const timer = window.setInterval(() => void refreshControlCenter(), 15_000);
+    return () => { unlisten?.(); window.clearInterval(timer); };
+  }, [refreshControlCenter]);
+
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
   const openGlobal = useCallback((page: AppPage) => updateUiState((current) => ({ ...current, lastPage: page, selectedProjectId: null, selectedCanvasId: null })), [updateUiState]);
@@ -81,9 +100,9 @@ export function useDesktopWorkspaceController() {
   const selectedCanvas = uiState.selectedProjectId && uiState.selectedCanvasId ? projectTree.projects[uiState.selectedProjectId]?.canvases[uiState.selectedCanvasId] : null;
   const route: DesktopRoute = selectedCanvas && uiState.selectedProjectId && uiState.selectedCanvasId
     ? { kind: "canvas", projectId: uiState.selectedProjectId, canvasId: uiState.selectedCanvasId, tab: uiState.canvasTabs[uiState.selectedCanvasId] ?? "overview" }
-    : { kind: "global", page: isAppPage(uiState.lastPage) ? uiState.lastPage : "instances" };
+    : { kind: "global", page: isAppPage(uiState.lastPage) ? uiState.lastPage : "home" };
 
-  return { snapshot, setSnapshot, projectTree, setProjectTree, route, uiState, updateUiState, openGlobal, openCanvas, setCanvasTab, toggleProject, toggleFolder, loading, error, setError, refresh };
+  return { snapshot, setSnapshot, controlCenter, setControlCenter, refreshControlCenter, wallet, projectTree, setProjectTree, route, uiState, updateUiState, openGlobal, openCanvas, setCanvasTab, toggleProject, toggleFolder, loading, error, setError, refresh };
 }
 
 function normalizeProjectTree(tree: ProjectTree): ProjectTree {
@@ -93,10 +112,10 @@ function normalizeProjectTree(tree: ProjectTree): ProjectTree {
 
 function normalizeUiState(state: WorkspaceUiState): WorkspaceUiState {
   const oldPage = state?.lastPage;
-  const lastPage = oldPage === "overview" ? "wallet" : oldPage === "workflows" ? "compositions" : oldPage;
-  return { ...defaultUiState, ...state, schemaVersion: 5, lastPage: isAppPage(lastPage) ? lastPage : "instances", shell: { ...defaultUiState.shell, ...(state?.shell ?? {}) }, workflows: state?.workflows ?? {}, selectedProjectId: state?.selectedProjectId ?? null, selectedCanvasId: state?.selectedCanvasId ?? null, expandedProjectIds: Array.isArray(state?.expandedProjectIds) ? state.expandedProjectIds : [], expandedFolderIds: Array.isArray(state?.expandedFolderIds) ? state.expandedFolderIds : [], canvasTabs: state?.canvasTabs ?? {} };
+  const lastPage = oldPage === "overview" ? "wallet" : oldPage === "workflows" ? "compositions" : oldPage === "instances" ? "home" : oldPage;
+  return { ...defaultUiState, ...state, schemaVersion: 6, lastPage: isAppPage(lastPage) ? lastPage : "home", shell: { ...defaultUiState.shell, ...(state?.shell ?? {}) }, workflows: state?.workflows ?? {}, selectedProjectId: state?.selectedProjectId ?? null, selectedCanvasId: state?.selectedCanvasId ?? null, expandedProjectIds: Array.isArray(state?.expandedProjectIds) ? state.expandedProjectIds : [], expandedFolderIds: Array.isArray(state?.expandedFolderIds) ? state.expandedFolderIds : [], canvasTabs: state?.canvasTabs ?? {} };
 }
 
 function toggle(items: string[], id: string) { return items.includes(id) ? items.filter((item) => item !== id) : [...items, id]; }
 function unique(items: string[]) { return [...new Set(items)]; }
-function isAppPage(value: unknown): value is AppPage { return typeof value === "string" && ["instances", "wallet", "direct", "compositions", "runs", "notifications", "templates", "settings"].includes(value); }
+function isAppPage(value: unknown): value is AppPage { return typeof value === "string" && ["home", "wallet", "direct", "compositions", "runs", "notifications", "templates", "settings"].includes(value); }

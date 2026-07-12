@@ -26,6 +26,28 @@ export function readError(reason: unknown) {
   return "桌面服务暂时不可用，请检查运行日志。";
 }
 
+export async function copyText(value: string) {
+  if (document.hasFocus() && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch {
+      // WebView2 may briefly lose focus when a native menu or dialog closes.
+    }
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.readOnly = true;
+  input.setAttribute("aria-hidden", "true");
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("应用窗口当前没有焦点，请点击窗口后重试复制。");
+}
+
 export function formatTimestamp(value?: number) {
   return value ? new Date(value).toLocaleString("zh-CN") : "本地运行事件";
 }

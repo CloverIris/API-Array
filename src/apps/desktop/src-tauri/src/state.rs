@@ -1,7 +1,7 @@
 const CREDENTIAL_SERVICE: &str = "API ARRAY";
 const DEFAULT_WORKSPACE_ID: &str = "default";
 const UI_STATE_KEY: &str = "desktop.ui_state";
-const UI_STATE_SCHEMA_VERSION: u32 = 5;
+const UI_STATE_SCHEMA_VERSION: u32 = 6;
 
 struct DesktopState {
     repository: ActiveWorkspace,
@@ -87,7 +87,7 @@ enum WorkspaceIntent {
 }
 
 fn default_page() -> String {
-    "instances".to_owned()
+    "home".to_owned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

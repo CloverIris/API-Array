@@ -1,5 +1,17 @@
 # API ARRAY 开发约定
 
+## V0.8 主页主控台强制约束
+
+开始全局导航、运行投影、主控台或接口文档 UI 工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V0.8_主页主控台与AppsSDKUI.md`。
+
+- 全局默认入口是“主页”，页面标题是“主控台”；旧 `instances` 只允许作为 UI State 迁移别名。
+- `ManagedInstance` 仍是 Direct Endpoint 与 Canvas Publisher 的只读投影，不得持久化为第三份事实源。
+- 主控台状态由 `useDesktopWorkspaceController` 集中读取；顶栏、底栏和页面不得各自重复调用 IPC。
+- 用户可见术语统一为“文档”，Core 内部 `LiveDocument` 类型保持不变。
+- 页面交互优先使用 Apps SDK UI 组件与语义令牌；禁止恢复独立页面 CSS 或写死主题颜色。
+- 工作区级搜索固定在统一顶部栏；主页业务快捷卡必须整卡可操作，禁止在卡内重复堆放“打开”按钮。
+- 批量启停仍由 Rust 一次预检、一次保存、一次网关刷新完成，前端不得循环调用单项命令。
+
 ## V0.7 全局实例机架强制约束
 
 开始运行控制、导航、网关或实例状态相关工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V0.7_全局实例机架.md`。

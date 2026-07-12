@@ -340,7 +340,7 @@ struct ManagedInstance {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct InstanceRackSnapshot {
+struct ControlCenterSnapshot {
     gateway: DesktopGatewaySnapshot,
     instances: Vec<ManagedInstance>,
     running_count: usize,
@@ -386,7 +386,7 @@ struct InstanceBatchResult {
     skipped: usize,
     gateway_refreshed: bool,
     results: Vec<ManagedInstanceActionResult>,
-    snapshot: InstanceRackSnapshot,
+    snapshot: ControlCenterSnapshot,
 }
 
 #[derive(Debug, Serialize)]

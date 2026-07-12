@@ -1,8 +1,8 @@
-struct InstanceRackService;
+struct InstanceControlService;
 
-impl InstanceRackService {
-    async fn snapshot(state: &DesktopState) -> Result<InstanceRackSnapshot, String> {
-        build_instance_rack_snapshot(state).await
+impl InstanceControlService {
+    async fn snapshot(state: &DesktopState) -> Result<ControlCenterSnapshot, String> {
+        build_control_center_snapshot(state).await
     }
 
     async fn control(state: &DesktopState, app: &AppHandle, ids: Vec<String>, start: bool, allow_warnings: bool) -> Result<InstanceBatchResult, String> {
@@ -49,7 +49,7 @@ fn provider_secret_reasons(workspace: &WorkspacePackage, asset_id: &str, store: 
     reasons
 }
 
-async fn build_instance_rack_snapshot(state: &DesktopState) -> Result<InstanceRackSnapshot, String> {
+async fn build_control_center_snapshot(state: &DesktopState) -> Result<ControlCenterSnapshot, String> {
     let workspace = load_workspace(&state.repository)?;
     let audit = state.repository.read_audit(1_000).map_err(safe_error)?;
     let gateway = state.gateway.lock().await;
@@ -130,15 +130,15 @@ async fn build_instance_rack_snapshot(state: &DesktopState) -> Result<InstanceRa
     let stopped_count = instances.iter().filter(|item| item.status == ManagedInstanceStatus::Stopped).count();
     let blocked_count = instances.iter().filter(|item| matches!(item.status, ManagedInstanceStatus::Blocked | ManagedInstanceStatus::Unpublished)).count();
     let failed_count = instances.iter().filter(|item| item.status == ManagedInstanceStatus::Failed).count();
-    Ok(InstanceRackSnapshot {
+    Ok(ControlCenterSnapshot {
         gateway: DesktopGatewaySnapshot { running: gateway_running, base_url: base, entry_count: mounted.len(), error: gateway_error },
         instances, running_count, stopped_count, blocked_count, failed_count,
     })
 }
 
 #[tauri::command]
-async fn instance_rack_snapshot(state: State<'_, DesktopState>) -> Result<InstanceRackSnapshot, String> {
-    InstanceRackService::snapshot(&state).await
+async fn control_center_snapshot(state: State<'_, DesktopState>) -> Result<ControlCenterSnapshot, String> {
+    InstanceControlService::snapshot(&state).await
 }
 
 fn apply_instance_start(workspace: &mut WorkspacePackage, store: &WindowsCredentialStore, instance_id: &str, allow_warnings: bool) -> Result<bool, String> {
@@ -197,7 +197,7 @@ fn apply_instance_stop(workspace: &mut WorkspacePackage, instance_id: &str) -> R
 }
 
 async fn control_instances(state: &DesktopState, app: &AppHandle, ids: Vec<String>, start: bool, allow_warnings: bool) -> Result<InstanceBatchResult, String> {
-    let before = build_instance_rack_snapshot(state).await?;
+    let before = build_control_center_snapshot(state).await?;
     let previous = before.instances.iter().map(|item| (item.id.clone(), item.status)).collect::<BTreeMap<_, _>>();
     let original = load_workspace(&state.repository)?;
     let mut next = original.clone();
@@ -231,7 +231,7 @@ async fn control_instances(state: &DesktopState, app: &AppHandle, ids: Vec<Strin
         }
         gateway_refreshed = true;
     }
-    let snapshot = build_instance_rack_snapshot(state).await?;
+    let snapshot = build_control_center_snapshot(state).await?;
     for result in &mut results {
         if let Some(instance) = snapshot.instances.iter().find(|item| item.id == result.instance_id) { result.next_status = instance.status; }
     }
@@ -248,42 +248,42 @@ async fn control_instances(state: &DesktopState, app: &AppHandle, ids: Vec<Strin
 
 #[tauri::command]
 async fn start_managed_instance(input: ManagedInstanceActionInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<InstanceBatchResult, String> {
-    InstanceRackService::control(&state, &app, vec![input.instance_id], true, input.allow_warnings).await
+    InstanceControlService::control(&state, &app, vec![input.instance_id], true, input.allow_warnings).await
 }
 
 #[tauri::command]
 async fn stop_managed_instance(input: ManagedInstanceActionInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<InstanceBatchResult, String> {
-    InstanceRackService::control(&state, &app, vec![input.instance_id], false, false).await
+    InstanceControlService::control(&state, &app, vec![input.instance_id], false, false).await
 }
 
 #[tauri::command]
 async fn start_all_instances(app: AppHandle, state: State<'_, DesktopState>) -> Result<InstanceBatchResult, String> {
-    let ids = build_instance_rack_snapshot(&state).await?.instances.into_iter().map(|item| item.id).collect();
-    InstanceRackService::control(&state, &app, ids, true, false).await
+    let ids = build_control_center_snapshot(&state).await?.instances.into_iter().map(|item| item.id).collect();
+    InstanceControlService::control(&state, &app, ids, true, false).await
 }
 
 #[tauri::command]
 async fn stop_all_instances(app: AppHandle, state: State<'_, DesktopState>) -> Result<InstanceBatchResult, String> {
-    let ids = build_instance_rack_snapshot(&state).await?.instances.into_iter().map(|item| item.id).collect();
-    InstanceRackService::control(&state, &app, ids, false, false).await
+    let ids = build_control_center_snapshot(&state).await?.instances.into_iter().map(|item| item.id).collect();
+    InstanceControlService::control(&state, &app, ids, false, false).await
 }
 
 #[tauri::command]
 async fn start_instances_by_kind(input: ManagedInstanceKindInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<InstanceBatchResult, String> {
-    let ids = build_instance_rack_snapshot(&state).await?.instances.into_iter().filter(|item| item.kind == input.kind).map(|item| item.id).collect();
-    InstanceRackService::control(&state, &app, ids, true, input.allow_warnings).await
+    let ids = build_control_center_snapshot(&state).await?.instances.into_iter().filter(|item| item.kind == input.kind).map(|item| item.id).collect();
+    InstanceControlService::control(&state, &app, ids, true, input.allow_warnings).await
 }
 
 #[tauri::command]
 async fn stop_instances_by_kind(input: ManagedInstanceKindInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<InstanceBatchResult, String> {
-    let ids = build_instance_rack_snapshot(&state).await?.instances.into_iter().filter(|item| item.kind == input.kind).map(|item| item.id).collect();
-    InstanceRackService::control(&state, &app, ids, false, false).await
+    let ids = build_control_center_snapshot(&state).await?.instances.into_iter().filter(|item| item.kind == input.kind).map(|item| item.id).collect();
+    InstanceControlService::control(&state, &app, ids, false, false).await
 }
 
 #[tauri::command]
 async fn test_managed_instance(input: ManagedInstanceActionInput, state: State<'_, DesktopState>) -> Result<PublisherConnectionTest, String> {
-    let rack = build_instance_rack_snapshot(&state).await?;
-    let instance = rack.instances.iter().find(|item| item.id == input.instance_id).ok_or_else(|| "实例不存在。".to_owned())?;
+    let snapshot = build_control_center_snapshot(&state).await?;
+    let instance = snapshot.instances.iter().find(|item| item.id == input.instance_id).ok_or_else(|| "实例不存在。".to_owned())?;
     if instance.status != ManagedInstanceStatus::Running { return Err("实例尚未运行。".to_owned()); }
     let workspace = load_workspace(&state.repository)?;
     let (kind, first, second) = parse_managed_instance_id(&input.instance_id)?;

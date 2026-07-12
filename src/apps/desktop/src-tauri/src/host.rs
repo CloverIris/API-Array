@@ -35,7 +35,7 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn install_application_tray(app: &AppHandle) -> tauri::Result<()> {
-    let instances = MenuItem::with_id(app, "navigate_instances", "实例机架", true, None::<&str>)?;
+    let home = MenuItem::with_id(app, "navigate_home", "打开主控台", true, None::<&str>)?;
     let status = MenuItem::with_id(app, "gateway_status", "网关状态：随应用运行", false, None::<&str>)?;
     let show = MenuItem::with_id(app, "show", "显示 API ARRAY", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "隐藏 API ARRAY", true, None::<&str>)?;
@@ -47,7 +47,7 @@ fn install_application_tray(app: &AppHandle) -> tauri::Result<()> {
     let separator_a = PredefinedMenuItem::separator(app)?;
     let separator_b = PredefinedMenuItem::separator(app)?;
     let separator_c = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&status, &separator_a, &show, &hide, &separator_b, &instances, &wallet, &direct, &compositions, &separator_c, &autostart, &quit])?;
+    let menu = Menu::with_items(app, &[&status, &separator_a, &show, &hide, &separator_b, &home, &wallet, &direct, &compositions, &separator_c, &autostart, &quit])?;
     let mut builder = TrayIconBuilder::with_id("main")
         .menu(&menu)
         .show_menu_on_left_click(true)
@@ -55,7 +55,7 @@ fn install_application_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
             "hide" => { if let Some(window) = app.get_webview_window("main") { let _ = window.hide(); } }
-            "navigate_instances" => navigate_from_tray(app, "instances"),
+            "navigate_home" => navigate_from_tray(app, "home"),
             "navigate_wallet" => navigate_from_tray(app, "wallet"),
             "navigate_direct" => navigate_from_tray(app, "direct"),
             "navigate_compositions" => navigate_from_tray(app, "compositions"),
@@ -225,7 +225,7 @@ pub fn run() {
             start_publisher,
             pause_publisher,
             stop_publisher,
-            instance_rack_snapshot,
+            control_center_snapshot,
             start_managed_instance,
             stop_managed_instance,
             test_managed_instance,

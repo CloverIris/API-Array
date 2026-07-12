@@ -146,7 +146,7 @@ export interface ManagedInstance {
   failoverCount: number;
   lastError: string | null;
 }
-export interface InstanceRackSnapshot {
+export interface ControlCenterSnapshot {
   gateway: DesktopSnapshot["gateway"];
   instances: ManagedInstance[];
   runningCount: number;
@@ -170,7 +170,7 @@ export interface InstanceBatchResult {
   skipped: number;
   gatewayRefreshed: boolean;
   results: ManagedInstanceActionResult[];
-  snapshot: InstanceRackSnapshot;
+  snapshot: ControlCenterSnapshot;
 }
 
 export interface WalletAssetImpact { directEndpoints: string[]; canvases: string[]; }
@@ -202,7 +202,7 @@ export interface WorkflowGraph {
 export type CanvasTab = "overview" | "workflow" | "routes" | "publisher" | "docs" | "runs";
 
 export interface WorkspaceUiState {
-  schemaVersion: 5;
+  schemaVersion: 6;
   themePreference: ThemePreference;
   lastPage: string;
   workspaceIntent: WorkspaceIntent;
@@ -307,7 +307,7 @@ export const updateDirectEndpoint = (input: { endpointId: string; assetId: strin
 export const deleteDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("delete_direct_endpoint", { input: { endpointId } });
 export const startDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("start_direct_endpoint", { input: { endpointId } });
 export const pauseDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("pause_direct_endpoint", { input: { endpointId } });
-export const getInstanceRackSnapshot = () => invoke<InstanceRackSnapshot>("instance_rack_snapshot");
+export const getControlCenterSnapshot = () => invoke<ControlCenterSnapshot>("control_center_snapshot");
 export const startManagedInstance = (instanceId: string, allowWarnings = false) => invoke<InstanceBatchResult>("start_managed_instance", { input: { instanceId, allowWarnings } });
 export const stopManagedInstance = (instanceId: string) => invoke<InstanceBatchResult>("stop_managed_instance", { input: { instanceId } });
 export const testManagedInstance = (instanceId: string) => invoke<PublisherConnectionTest>("test_managed_instance", { input: { instanceId } });
