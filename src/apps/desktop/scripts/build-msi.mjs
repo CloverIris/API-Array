@@ -9,12 +9,32 @@ if (!wixBin) {
 }
 
 const desktopRoot = resolve(import.meta.dirname, "..");
+const buildEnvironment = {
+  ...process.env,
+  APIARRAY_RELEASE_BUILD: "1",
+  PATH: `${wixBin}${delimiter}${process.env.PATH ?? ""}`,
+};
+
+const frontend = spawnSync(
+  process.execPath,
+  ["./node_modules/next/dist/bin/next", "build"],
+  { cwd: desktopRoot, env: buildEnvironment, stdio: "inherit" },
+);
+if (frontend.status !== 0) process.exit(frontend.status ?? 1);
+
 const result = spawnSync(
   process.execPath,
-  ["./node_modules/@tauri-apps/cli/tauri.js", "build", "--bundles", "msi"],
+  [
+    "./node_modules/@tauri-apps/cli/tauri.js",
+    "build",
+    "--bundles",
+    "msi",
+    "--config",
+    "./src-tauri/tauri.release.conf.json",
+  ],
   {
     cwd: desktopRoot,
-    env: { ...process.env, PATH: `${wixBin}${delimiter}${process.env.PATH ?? ""}` },
+    env: buildEnvironment,
     stdio: "inherit",
   },
 );

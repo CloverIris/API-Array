@@ -3,7 +3,7 @@
 import { Button } from "@openai/apps-sdk-ui/components/Button";
 import { Menu } from "@openai/apps-sdk-ui/components/Menu";
 import { Tooltip } from "@openai/apps-sdk-ui/components/Tooltip";
-import { Branch, ChevronDown, ChevronRight, Folder, FolderOpen, Plus } from "@openai/apps-sdk-ui/components/Icon";
+import { ChevronDown, ChevronRight, DotsHorizontal, Folder, FolderOpen, Plus } from "@openai/apps-sdk-ui/components/Icon";
 import { useMemo, useState } from "react";
 import { createCanvas, createFolder, createProject, deleteCanvas, deleteFolder, deleteProject, duplicateCanvas, moveCanvas, renameCanvas, renameFolder, renameProject, type ProjectTree as Model, type PublisherSnapshot } from "../../lib/desktop";
 import { askAppDialog } from "../dialogs/AppDialog";
@@ -56,9 +56,11 @@ export function ProjectTree(props: Props) {
           const unfiled = Object.values(project.canvases ?? {}).filter((item) => !item.folderId).sort(sortPlans);
           return <div className="project-block" role="treeitem" aria-expanded={projectOpen} key={project.id}>
             <div className="project-row">
-              <button className="tree-expand" aria-label={`${projectOpen ? "折叠" : "展开"}${project.name}`} onClick={() => props.onToggleProject(project.id)}>{projectOpen ? <ChevronDown /> : <ChevronRight />}</button>
-              {projectOpen ? <FolderOpen className="tree-kind-icon" aria-hidden="true" /> : <Folder className="tree-kind-icon" aria-hidden="true" />}
-              <span className="project-label" title={project.name}>{project.name}</span>
+              <button className="tree-node-toggle project-node-toggle" aria-label={`${projectOpen ? "折叠" : "展开"}项目 ${project.name}`} aria-expanded={projectOpen} onClick={() => props.onToggleProject(project.id)}>
+                <span className="tree-disclosure" aria-hidden="true">{projectOpen ? <ChevronDown /> : <ChevronRight />}</span>
+                {projectOpen ? <FolderOpen className="tree-kind-icon" aria-hidden="true" /> : <Folder className="tree-kind-icon" aria-hidden="true" />}
+                <span className="tree-node-label" title={project.name}>{project.name}</span>
+              </button>
               <TreeMenu label={`${project.name} 项目菜单`} items={[
                 ["新建文件夹", async () => promptAndRun("新建文件夹", "文件夹名称", "新文件夹", (name) => createFolder(project.id, name), run)],
                 ["新建编组方案", async () => promptAndRun("新建编组方案", "方案名称", "新编组方案", (name) => createCanvas(project.id, undefined, name), run)],
@@ -69,7 +71,7 @@ export function ProjectTree(props: Props) {
             {projectOpen ? <div role="group" className="project-children">
               {folders.map((folder) => <FolderBranch key={folder.id} projectId={project.id} folder={folder} allFolders={project.folders ?? {}} plans={project.canvases ?? {}} selectedCanvasId={props.selectedCanvasId} expanded={props.expandedFolders.includes(`${project.id}:${folder.id}`) || (folder.canvasIds ?? []).includes(props.selectedCanvasId ?? "")} lifecycle={lifecycle} onToggle={() => props.onToggleFolder(`${project.id}:${folder.id}`)} onOpen={props.onOpenCanvas} run={run} />)}
               {unfiled.length ? <div className="folder-block virtual-folder" role="treeitem" aria-expanded="true">
-                <div className="folder-row"><span className="tree-expand tree-expand-spacer" /><Folder className="tree-kind-icon" aria-hidden="true" /><span className="folder-label">未分类编组方案</span></div>
+                <div className="folder-row folder-row-static"><div className="tree-node-toggle tree-node-static"><span className="tree-disclosure tree-disclosure-spacer" /><Folder className="tree-kind-icon" aria-hidden="true" /><span className="tree-node-label">未分类编组方案</span></div></div>
                 <div role="group" className="folder-children">{unfiled.map((plan) => <PlanRow key={plan.id} plan={plan} projectId={project.id} folders={project.folders ?? {}} selected={props.selectedCanvasId === plan.id} lifecycle={plan.publisherId ? lifecycle.get(plan.publisherId) : undefined} onOpen={() => props.onOpenCanvas(project.id, plan.id)} run={run} />)}</div>
               </div> : null}
               {!folders.length && !unfiled.length ? <p className="tree-empty">这个项目还没有编组方案。</p> : null}
@@ -87,9 +89,11 @@ function FolderBranch({ projectId, folder, allFolders, plans, selectedCanvasId, 
   const folderPlans = (folder.canvasIds ?? []).map((id) => plans[id]).filter((item): item is CompositionPlan => Boolean(item)).sort(sortPlans);
   return <div className="folder-block" role="treeitem" aria-expanded={expanded}>
     <div className="folder-row">
-      <button className="tree-expand" aria-label={`${expanded ? "折叠" : "展开"}${folder.name}`} onClick={onToggle}>{expanded ? <ChevronDown /> : <ChevronRight />}</button>
-      {expanded ? <FolderOpen className="tree-kind-icon" aria-hidden="true" /> : <Folder className="tree-kind-icon" aria-hidden="true" />}
-      <span className="folder-label" title={folder.name}>{folder.name}</span>
+      <button className="tree-node-toggle folder-node-toggle" aria-label={`${expanded ? "折叠" : "展开"}文件夹 ${folder.name}`} aria-expanded={expanded} onClick={onToggle}>
+        <span className="tree-disclosure" aria-hidden="true">{expanded ? <ChevronDown /> : <ChevronRight />}</span>
+        {expanded ? <FolderOpen className="tree-kind-icon" aria-hidden="true" /> : <Folder className="tree-kind-icon" aria-hidden="true" />}
+        <span className="tree-node-label" title={folder.name}>{folder.name}</span>
+      </button>
       <TreeMenu label={`${folder.name} 文件夹菜单`} items={[
         ["新建编组方案", async () => promptAndRun("新建编组方案", "方案名称", "新编组方案", (name) => createCanvas(projectId, folder.id, name), run)],
         ["重命名文件夹", async () => promptAndRun("重命名文件夹", "文件夹名称", folder.name, (name) => renameFolder(projectId, folder.id, name), run, "保存")],
@@ -102,11 +106,10 @@ function FolderBranch({ projectId, folder, allFolders, plans, selectedCanvasId, 
 
 function PlanRow({ plan, projectId, folders, selected, lifecycle, onOpen, run }: { plan: CompositionPlan; projectId: string; folders: Record<string, FolderModel>; selected: boolean; lifecycle?: string; onOpen: () => void; run: (action: () => Promise<Model>) => Promise<void> }) {
   const status = lifecycle === "running" ? "running" : lifecycle === "paused" ? "paused" : lifecycle === "failed" ? "failed" : "draft";
+  const statusLabel = status === "running" ? "运行中" : status === "paused" ? "已暂停" : status === "failed" ? "运行失败" : "未运行";
   const moves: Array<[string, () => Promise<void>]> = [["移动到未分类", () => run(() => moveCanvas(projectId, plan.id, undefined))], ...Object.values(folders).filter((folder) => folder.id !== plan.folderId).sort((left, right) => left.name.localeCompare(right.name, "zh-CN")).map((folder) => [`移动到 ${folder.name}`, () => run(() => moveCanvas(projectId, plan.id, folder.id))] as [string, () => Promise<void>])];
   return <div className={`canvas-row ${selected ? "selected" : ""}`} role="treeitem" aria-selected={selected}>
-    <span className={`canvas-status-dot status-${status}`} aria-label={`状态：${status}`} />
-    <Branch className="plan-icon" aria-hidden="true" />
-    <button className="canvas-row-name" title={plan.name} onClick={onOpen}>{plan.name}</button>
+    <button className="canvas-row-name" title={plan.name} onClick={onOpen}><span className={`canvas-status-dot status-${status}`} aria-label={`状态：${statusLabel}`} /><span className="canvas-plan-label">{plan.name}</span></button>
     <TreeMenu label={`${plan.name} 编组方案菜单`} items={[
       ["重命名编组方案", async () => promptAndRun("重命名编组方案", "方案名称", plan.name, (name) => renameCanvas(projectId, plan.id, name), run, "保存")],
       ["复制编组方案", () => run(() => duplicateCanvas(projectId, plan.id))],
@@ -128,5 +131,5 @@ async function confirmAndRun(title: string, description: string, confirmLabel: s
 function sortPlans(left: CompositionPlan, right: CompositionPlan) { return left.name.localeCompare(right.name, "zh-CN") || left.id.localeCompare(right.id); }
 
 function TreeMenu({ label, items }: { label: string; items: Array<[string, () => Promise<void>]> }) {
-  return <Menu><Menu.Trigger><Button className="tree-menu-button" color="secondary" variant="ghost" size="sm" uniform aria-label={label}>•••</Button></Menu.Trigger><Menu.Content side="right" align="start" minWidth={180}>{items.map(([text, action], index) => <Menu.Item key={`${text}:${index}`} onSelect={() => void action()}>{text}</Menu.Item>)}</Menu.Content></Menu>;
+  return <Menu><Menu.Trigger><Tooltip content={label}><Button className="tree-menu-button" color="secondary" variant="ghost" size="sm" uniform aria-label={label}><DotsHorizontal /></Button></Tooltip></Menu.Trigger><Menu.Content side="right" align="start" minWidth={180}>{items.map(([text, action], index) => <Menu.Item key={`${text}:${index}`} onSelect={() => void action()}>{text}</Menu.Item>)}</Menu.Content></Menu>;
 }

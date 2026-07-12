@@ -1,3 +1,4 @@
 .codex-target/
 /target-check/
 /src/release/
+/src/apps/desktop/.next-release/

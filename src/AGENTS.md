@@ -9,6 +9,8 @@
 - 运行记录与通知必须来自 SQLite 的脱敏持久化事实，前端不得自行伪造或持久化第二份运行状态。
 - MSI 仅通过 Tauri/WiX 构建；生成产物、校验值和发布说明不能提交到 Git。
 - 未签名 Preview 必须明确告知 SmartScreen 风险；代码签名不得被自定义安装器绕过。
+- 公开仓库同时维护根目录 `README.md`（简体中文）与 `README_EN.md`（English），两份文档必须互相链接，并保持版本、能力、安全边界和构建命令一致。
+- 每次发布必须由 `package-release.mjs` 在被 Git 忽略的 `src/release/` 中生成 GitHub Release 页面 Markdown；内容包含项目图标、版本标签、本版本能力、安装、安全、限制、校验与反馈入口。生成的 Release Markdown 和安装产物不得提交到 Git。
 
 ## V0.8 主页主控台强制约束
 
@@ -259,7 +261,7 @@ CLI 输入输出结构必须版本化，至少预留 `schema_version` 字段。
 
 ## 10. 文件与仓库结构
 
-根目录继续只保留 `README.md`、`docs/` 和 `src/` 三个产品入口。全部源代码、Cargo workspace、Provider YAML、Schema、模板、脚本、测试和资源均放在 `src/` 下。
+根目录继续只保留 `README.md`、`README_EN.md`、`LICENSE`、`docs/` 和 `src/` 五个产品与开源入口。全部源代码、Cargo workspace、Provider YAML、Schema、模板、脚本、测试和资源均放在 `src/` 下。
 
 除非构建工具存在无法规避的根目录要求，否则不得在仓库根目录散落开发文件。需要改变这一冻结结构时，先更新产品设计决策，而不是直接添加文件。
 

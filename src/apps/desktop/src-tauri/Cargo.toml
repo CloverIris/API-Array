@@ -27,6 +27,7 @@ tauri-plugin-dialog = "2"
 tokio = { workspace = true }
 window-vibrancy = "0.7.1"
 tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

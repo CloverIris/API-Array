@@ -16,7 +16,7 @@
     "version:sync": "node ./scripts/sync-version.mjs",
     "release:preflight": "node ./scripts/release-preflight.mjs",
     "release:verify": "node ./scripts/release-verify.mjs",
-    "release:msi": "npm.cmd run release:preflight && npm.cmd run release:verify && npm.cmd run build && node ./scripts/build-msi.mjs && node ./scripts/package-release.mjs"
+    "release:msi": "npm.cmd run release:preflight && npm.cmd run release:verify && node ./scripts/build-msi.mjs && node ./scripts/package-release.mjs"
   },
   "dependencies": {
     "@openai/apps-sdk-ui": "0.2.2",

@@ -7,6 +7,8 @@ import { CompositionsPage } from "./pages/CompositionsPage";
 import { DirectEndpointsPage } from "./pages/PublishersPage";
 import { WalletStation } from "./pages/WalletStation";
 import { HomeDashboard } from "./pages/HomeDashboard";
+import { EmptyMessage } from "@openai/apps-sdk-ui/components/EmptyMessage";
+import { Home } from "@openai/apps-sdk-ui/components/Icon";
 
 export function MainWorkspace({ route, projectTree, snapshot, controlCenter, wallet, uiState, onSnapshot, onControlCenter, onTree, onUiState, onCanvasTab, onOpenCanvas, onNavigate, onWorkflowSelection, onChanged }: {
   route: DesktopRoute;
@@ -28,7 +30,8 @@ export function MainWorkspace({ route, projectTree, snapshot, controlCenter, wal
   const control = snapshot.control!;
   const publishers = control.supervisor.publishers ?? [];
   if (route.kind === "canvas") return <CanvasWorkspace projectId={route.projectId} canvasId={route.canvasId} tab={route.tab} uiState={uiState} onTab={onCanvasTab} onUiState={onUiState} onDesktopSnapshot={onSnapshot} onWorkflowSelection={onWorkflowSelection} onChanged={onChanged} />;
-  if (route.page === "home") return <HomeDashboard workspaceName={control.workspaceName} controlCenter={controlCenter} wallet={wallet} projectTree={projectTree} onControlCenter={onControlCenter} onRefresh={onChanged} onNavigate={onNavigate} onOpenCanvas={onOpenCanvas} />;
+  if (route.page === "home" && !controlCenter) return <EmptyMessage fill="absolute"><EmptyMessage.Icon><Home /></EmptyMessage.Icon><EmptyMessage.Title>正在打开主控台</EmptyMessage.Title><EmptyMessage.Description>正在读取本地网关与实例状态。</EmptyMessage.Description></EmptyMessage>;
+  if (route.page === "home") return <HomeDashboard workspaceName={control.workspaceName} controlCenter={controlCenter!} wallet={wallet} projectTree={projectTree} onControlCenter={onControlCenter} onRefresh={onChanged} onNavigate={onNavigate} onOpenCanvas={onOpenCanvas} />;
   if (route.page === "wallet") return <WalletStation onOpenDirect={(assetId) => { sessionStorage.setItem("apiarray.direct.asset", assetId); onNavigate("direct"); }} />;
   if (route.page === "compositions") return <CompositionsPage tree={projectTree} publishers={publishers} onOpenCanvas={onOpenCanvas} />;
   if (route.page === "direct") return <DirectEndpointsPage snapshot={snapshot} />;

@@ -7,11 +7,12 @@ import { ContextInspector } from "../components/ContextInspector";
 import { MainWorkspace } from "../components/MainWorkspace";
 import { Onboarding } from "../components/Onboarding";
 import { AppShell } from "../components/shell/AppShell";
+import { ClientErrorBoundary } from "../components/ClientErrorBoundary";
 import type { SelectedWorkflowItem } from "../components/workflow/WorkflowInspector";
 import { useDesktopWorkspaceController } from "../hooks/useDesktopWorkspaceController";
 import { useTheme } from "../hooks/useTheme";
 
-export default function HomePage() { return <AppsSDKUIProvider linkComponent="a"><DesktopApp /></AppsSDKUIProvider>; }
+export default function HomePage() { return <ClientErrorBoundary><AppsSDKUIProvider linkComponent="a"><DesktopApp /></AppsSDKUIProvider></ClientErrorBoundary>; }
 
 function DesktopApp() {
   const controller = useDesktopWorkspaceController();
