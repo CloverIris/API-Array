@@ -35,6 +35,7 @@ import {
   type WorkspaceUiState,
 } from "../../lib/desktop";
 import { EmptyPage, readError } from "../shared";
+import { askAppDialog } from "../dialogs/AppDialog";
 import { ApiArrayNode } from "./ApiArrayNode";
 import { WorkflowEdge } from "./WorkflowEdge";
 import { WorkflowToolbar, type SaveState } from "./WorkflowToolbar";
@@ -114,13 +115,13 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
   const toggleNode = useCallback(async (id: string) => {
     const current = nodes.find((item) => item.id === id);
     if (!current) return;
-    if (current.data.model.kind === "publisher") { setLocalError("Canvas 总输出器不能停用。"); return; }
+    if (current.data.model.kind === "publisher") { setLocalError("编组方案总输出器不能停用。"); return; }
     if (current.data.model.enabled && graph?.nodes.some((item) => item.id === id)) {
       const impact = await getCanvasNodeImpact(projectId, canvasId, id).catch(() => null);
       const detail = impact
         ? [`下游节点：${impact.downstream_nodes.join("、") || "无"}`, `受影响 Publisher：${impact.affected_publishers.join("、") || "无"}`].join("\n")
         : "暂时无法读取完整影响范围。";
-      if (!window.confirm(`停用 ${current.data.model.name} 可能中断请求路径。\n${detail}\n\n是否继续？`)) return;
+      if (!await askAppDialog({ title: `停用 ${current.data.model.name}？`, description: `这可能中断请求路径。\n${detail}`, confirmLabel: "停用节点", danger: true })) return;
     }
     updateNode(id, { enabled: !current.data.model.enabled });
   }, [canvasId, graph, nodes, projectId, updateNode]);
@@ -164,7 +165,7 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
   }, [connectionError, markDirty, nodes, snapshotHistory]);
 
   const addNode = (kind: WorkflowNode["kind"]) => {
-    if (kind === "publisher" && nodes.some((node) => node.data.model.kind === "publisher")) { setLocalError("每个 Canvas 只能有一个总输出器。"); return; }
+    if (kind === "publisher" && nodes.some((node) => node.data.model.kind === "publisher")) { setLocalError("每个编组方案只能有一个总输出器。"); return; }
     snapshotHistory();
     const model = newWorkflowNode(kind, nodes.length);
     const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
@@ -237,14 +238,14 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
   }, [edges, graph, nodes, onSelection, updateNode, wallet]);
   const beforeDelete = async ({ nodes: deletingNodes }: { nodes: CanvasNode[]; edges: CanvasEdge[] }) => {
     if (!deletingNodes.length) return true;
-    if (deletingNodes.some((node) => node.data.model.kind === "publisher")) { setLocalError("Canvas 总输出器受保护，不能删除。"); return false; }
+    if (deletingNodes.some((node) => node.data.model.kind === "publisher")) { setLocalError("编组方案总输出器受保护，不能删除。"); return false; }
     const impacts = await Promise.all(deletingNodes.filter((node) => graph?.nodes.some((item) => item.id === node.id)).map((node) => getCanvasNodeImpact(projectId, canvasId, node.id).catch(() => null)));
     const publishers = [...new Set(impacts.flatMap((impact) => impact?.affected_publishers ?? []))];
     const downstream = [...new Set(impacts.flatMap((impact) => impact?.downstream_nodes ?? []))];
     const detail = [`将删除 ${deletingNodes.length} 个节点。`, publishers.length ? `受影响 Publisher：${publishers.join("、")}` : "没有已发布出口受影响。", downstream.length ? `下游节点：${downstream.join("、")}` : "没有下游节点。"].join("\n");
-    const accepted = window.confirm(`${detail}\n\n此操作会形成未保存草稿，是否继续？`);
+    const accepted = await askAppDialog({ title: "删除所选编排对象？", description: `${detail}\n此操作会形成未保存草稿。`, confirmLabel: "删除", danger: true });
     if (accepted) { snapshotHistory(); markDirty(); }
-    return accepted;
+    return Boolean(accepted);
   };
 
   if (loadingError) return <div><p className="error-message" role="alert">{loadingError}</p><EmptyPage page="工作流无法加载" hint="最后一份有效运行配置没有被修改。" icon={Branch} /></div>;
@@ -257,7 +258,7 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
     <div className="workflow-canvas" aria-label="API ARRAY 节点编排画布">
       <ReactFlow nodes={displayedNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={connect} isValidConnection={(connection) => !connectionError(connection)} onMoveEnd={moveEnd} onNodeDragStop={nodeDragStop} onSelectionChange={selectionChanged} onBeforeDelete={beforeDelete} defaultViewport={uiState.workflows[graph.id]?.viewport} fitView={!uiState.workflows[graph.id]} nodesFocusable edgesFocusable deleteKeyCode={["Backspace", "Delete"]} multiSelectionKeyCode={["Control", "Meta"]} ariaLabelConfig={ariaLabels} minZoom={0.2} maxZoom={2.5} snapToGrid snapGrid={[16, 16]}>
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-        {!nodes.length ? <Panel position="top-center" className="canvas-empty"><strong>从 API 钱包开始编组</strong><span>新 Canvas 会自动生成 Composer 与 Publisher；钱包资产会作为候选连接到 Composer。</span></Panel> : null}
+        {!nodes.length ? <Panel position="top-center" className="canvas-empty"><strong>从 API 钱包开始编组</strong><span>新编组方案会自动生成 Composer 与 Publisher；钱包资产会作为候选连接到 Composer。</span></Panel> : null}
         <MiniMap pannable zoomable nodeColor={(node) => (node as CanvasNode).data.model.enabled ? "var(--app-port-candidate)" : "var(--color-text-tertiary)"} />
         <Controls showInteractive={false} />
       </ReactFlow>

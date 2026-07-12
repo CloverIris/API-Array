@@ -4,6 +4,7 @@ const UI_STATE_KEY: &str = "desktop.ui_state";
 const UI_STATE_SCHEMA_VERSION: u32 = 6;
 
 struct DesktopState {
+    app: AppHandle,
     repository: ActiveWorkspace,
     secret_store: Arc<WindowsCredentialStore>,
     probe_runner: ProviderProbeRunner,
@@ -39,7 +40,13 @@ impl ActiveWorkspace {
     fn backup(&self) -> Result<WorkspaceBackup, apiarray_runtime::RuntimeError> { self.current().backup() }
     fn compact(&self) -> Result<(), apiarray_runtime::RuntimeError> { self.current().compact() }
     fn write_setting(&self, key: &str, value: &str) -> Result<(), apiarray_runtime::RuntimeError> { self.current().write_setting(key, value) }
+    fn read_setting(&self, key: &str) -> Result<Option<String>, apiarray_runtime::RuntimeError> { self.current().read_setting(key) }
     fn read_audit(&self, limit: usize) -> Result<Vec<ExecutionTrace>, apiarray_runtime::RuntimeError> { self.current().read_audit(limit) }
+    fn query_audit(&self, query: apiarray_runtime::persistence::AuditQuery) -> Result<Vec<ExecutionTrace>, apiarray_runtime::RuntimeError> { self.current().query_audit(query) }
+    fn read_notifications(&self, query: apiarray_runtime::persistence::NotificationQuery) -> Result<Vec<apiarray_runtime::persistence::StoredNotification>, apiarray_runtime::RuntimeError> { self.current().read_notifications(query) }
+    fn mark_notifications_read(&self, ids: &[String]) -> Result<(), apiarray_runtime::RuntimeError> { self.current().mark_notifications_read(ids) }
+    fn clear_read_notifications(&self) -> Result<usize, apiarray_runtime::RuntimeError> { self.current().clear_read_notifications() }
+    fn upsert_notification(&self, notification: &apiarray_core::events::AggregatedNotification) -> Result<bool, apiarray_runtime::RuntimeError> { self.current().upsert_notification(notification) }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

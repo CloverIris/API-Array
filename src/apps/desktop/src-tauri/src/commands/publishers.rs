@@ -3,6 +3,7 @@ async fn create_canvas_publisher(
     input: PublisherInput,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
+    ensure_no_running_publishers(&state).await?;
     let mut workspace = load_workspace(&state.repository)?;
     let canvas = workspace
         .projects
@@ -23,7 +24,10 @@ async fn create_canvas_publisher(
     }
     let token_ref = SecretRef::parse(format!("secret://publisher/{publisher_id}"))
         .map_err(|error| error.message)?;
-    let base_path = input.base_path.unwrap_or_else(|| "/v1".to_owned());
+    // Canvas publishers are mounted under the shared LocalGateway. The
+    // per-publisher port/base path from the legacy form must not create a
+    // second listener or an ambiguous URL.
+    let base_path = format!("/canvas/{}/{}/v1", input.project_id, input.canvas_id);
     workspace.runtime.publishers.insert(
         publisher_id.clone(),
         RuntimePublisher {
@@ -32,7 +36,7 @@ async fn create_canvas_publisher(
                 id: publisher_id.clone(),
                 name: input.name,
                 listen_address: "127.0.0.1".parse().map_err(|_| "回环地址无效。")?,
-                port: input.port,
+                port: workspace.gateway.port,
                 base_path,
                 require_token: true,
                 token_ref: Some(token_ref.clone()),
@@ -57,13 +61,16 @@ async fn create_canvas_publisher(
         output.config = serde_json::json!({"publisher_id": publisher_id, "status": "ready"});
     }
     workspace.validate().map_err(|error| error.message)?;
-    ensure_no_running_publishers(&state).await?;
     state
         .secret_store
         .put(&token_ref, SecretValue::new(input.token))
         .map_err(safe_error)?;
-    state.repository.save(&workspace).map_err(safe_error)?;
+    if let Err(error) = state.repository.save(&workspace) {
+        let _ = state.secret_store.delete(&token_ref);
+        return Err(safe_error(error));
+    }
     reload_control_plane(&state).await?;
+    restart_gateway(&state).await?;
     snapshot(&state).await
 }
 
@@ -72,23 +79,35 @@ async fn delete_publisher(
     publisher_id: String,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
+    ensure_no_running_publishers(&state).await?;
     let mut workspace = load_workspace(&state.repository)?;
     let removed = workspace
         .runtime
         .publishers
         .remove(&publisher_id)
         .ok_or_else(|| "Publisher 不存在。".to_owned())?;
-    if let Some(reference) = removed.config.token_ref.as_ref() {
-        let _ = state.secret_store.delete(reference);
+    for project in workspace.projects.projects.values_mut() {
+        for canvas in project.canvases.values_mut() {
+            if canvas.publisher_id.as_deref() == Some(publisher_id.as_str()) {
+                canvas.publisher_id = None;
+                if let Some(output) = canvas.graph.nodes.iter_mut().find(|node| node.kind == NodeKind::Publisher) {
+                    output.config = serde_json::json!({"publisher_id": null, "status": "not_published"});
+                }
+                canvas.draft_revision = canvas.draft_revision.saturating_add(1);
+            }
+        }
     }
     workspace
         .runtime_state
         .enabled_publishers
         .remove(&publisher_id);
     workspace.validate().map_err(|error| error.message)?;
-    ensure_no_running_publishers(&state).await?;
     state.repository.save(&workspace).map_err(safe_error)?;
+    if let Some(reference) = removed.config.token_ref.as_ref() {
+        state.secret_store.delete(reference).map_err(safe_error)?;
+    }
     reload_control_plane(&state).await?;
+    restart_gateway(&state).await?;
     snapshot(&state).await
 }
 

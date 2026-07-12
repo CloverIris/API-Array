@@ -119,7 +119,7 @@ export function UnifiedTopBar({
         <Search aria-hidden="true" />
         <Input
           aria-label="搜索工作区"
-          placeholder="搜索 API、实例或 Canvas"
+          placeholder="搜索 API、实例或编组方案"
           value={query}
           onFocus={() => setFocused(true)}
           onBlur={() => window.setTimeout(() => setFocused(false), 120)}
@@ -141,7 +141,7 @@ export function UnifiedTopBar({
                   <span><strong>{result.label}</strong><small>{result.detail}</small></span>
                 </button>
               );
-            }) : <p>没有匹配的 API、实例或 Canvas</p>}
+            }) : <p>没有匹配的 API、实例或编组方案</p>}
           </div>
         ) : null}
       </div>

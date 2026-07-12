@@ -33,7 +33,7 @@ export function MainWorkspace({ route, projectTree, snapshot, controlCenter, wal
   if (route.page === "compositions") return <CompositionsPage tree={projectTree} publishers={publishers} onOpenCanvas={onOpenCanvas} />;
   if (route.page === "direct") return <DirectEndpointsPage snapshot={snapshot} />;
   if (route.page === "runs") return <RunsPage />;
-  if (route.page === "notifications") return <NotificationsPage notifications={control.notifications} />;
+  if (route.page === "notifications") return <NotificationsPage />;
   if (route.page === "templates") return <TemplatesPage publishers={publishers} />;
-  return <SettingsPage onSnapshot={onSnapshot} uiState={uiState} onUiState={onUiState} />;
+  return <SettingsPage snapshot={snapshot} onSnapshot={onSnapshot} uiState={uiState} onUiState={onUiState} />;
 }

@@ -46,10 +46,18 @@ async fn snapshot(state: &DesktopState) -> Result<DesktopSnapshot, String> {
         .map(|workspace| workspace.runtime.providers.len())
         .unwrap_or(0);
     let control = match control_plane {
-        Some(plane) => Some(to_desktop_control_snapshot(
-            plane.snapshot().await,
-            provider_count,
-        )),
+        Some(plane) => {
+            let plane_snapshot = plane.snapshot().await;
+            let system_notifications_enabled = state.repository.current().read_setting("desktop.system_notifications").ok().flatten().map_or(true, |value| value != "false");
+            for notification in &plane_snapshot.notifications {
+                let changed = state.repository.upsert_notification(notification).unwrap_or(false);
+                if changed && system_notifications_enabled && matches!(notification.level, apiarray_core::events::NotificationLevel::System | apiarray_core::events::NotificationLevel::ActionRequired) {
+                    let _ = state.app.notification().builder().title("API ARRAY").body(&notification.event.summary).show();
+                }
+            }
+            let notifications = state.repository.read_notifications(apiarray_runtime::persistence::NotificationQuery { unread_only: false, limit: 200 }).unwrap_or_default();
+            Some(to_desktop_control_snapshot(plane_snapshot, provider_count, notifications))
+        }
         None => None,
     };
 
@@ -61,7 +69,7 @@ async fn snapshot(state: &DesktopState) -> Result<DesktopSnapshot, String> {
         control,
         gateway: DesktopGatewaySnapshot {
             running: gateway.is_some(),
-            base_url: workspace.as_ref().map_or_else(|| "http://127.0.0.1:7480".to_owned(), |workspace| format!("http://{}:{}", workspace.gateway.listen_address, workspace.gateway.port)),
+            base_url: workspace.as_ref().map_or_else(|| "http://127.0.0.1:7480".to_owned(), |workspace| gateway_origin(&workspace.gateway.listen_address, workspace.gateway.port)),
             entry_count: gateway.as_ref().map_or(0, |item| item.entry_prefixes().len()),
             error: state.gateway_error.lock().await.clone(),
         },
@@ -74,6 +82,16 @@ fn workspace_name(input: &str) -> String {
         return "我的 API ARRAY 工作区".to_owned();
     }
     name.chars().take(80).collect()
+}
+
+fn gateway_origin(address: &str, port: u16) -> String {
+    if address.contains(':') { format!("http://[{address}]:{port}") } else { format!("http://{address}:{port}") }
+}
+
+fn gateway_socket_address(address: &str, port: u16) -> Result<std::net::SocketAddr, String> {
+    let ip = address.parse::<std::net::IpAddr>().map_err(|_| "监听地址必须是本机回环 IP。".to_owned())?;
+    if !ip.is_loopback() { return Err("统一网关只能监听 127.0.0.1 或 ::1。".to_owned()); }
+    Ok(std::net::SocketAddr::new(ip, port))
 }
 
 fn empty_workspace(name: &str) -> WorkspacePackage {
@@ -125,17 +143,24 @@ fn default_projects() -> WorkspaceProjects {
 }
 
 fn direct_endpoint_url(workspace: &WorkspacePackage, alias: &str) -> String {
-    format!("http://{}:{}/direct/{alias}/v1", workspace.gateway.listen_address, workspace.gateway.port)
+    format!("{}/direct/{alias}/v1", gateway_origin(&workspace.gateway.listen_address, workspace.gateway.port))
+}
+
+fn canvas_endpoint_url(workspace: &WorkspacePackage, project_id: &str, canvas_id: &str) -> String {
+    format!("{}/canvas/{project_id}/{canvas_id}/v1", gateway_origin(&workspace.gateway.listen_address, workspace.gateway.port))
 }
 
 async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
-    if let Some(previous) = state.gateway.lock().await.take() {
-        previous.stop().await;
-    }
     let workspace = load_workspace(&state.repository)?;
     let entries = gateway_entries(&workspace, &state.repository, &state.secret_store)?;
-    let address: std::net::SocketAddr = format!("{}:{}", workspace.gateway.listen_address, workspace.gateway.port)
-        .parse().map_err(|_| "统一审计网关地址无效。".to_owned())?;
+    let address = gateway_socket_address(&workspace.gateway.listen_address, workspace.gateway.port)?;
+
+    // Build the route set before touching the current gateway. Binding the same
+    // port still requires a short hand-over, so retain the old workspace and
+    // restore it if the new listener cannot be created.
+    let previous_workspace = workspace.clone();
+    let previous = state.gateway.lock().await.take();
+    if let Some(previous) = previous { previous.stop().await; }
     match apiarray_runtime::gateway::LocalGateway::start(address, entries).await {
         Ok(gateway) => {
             eprintln!("API ARRAY LocalGateway listening on {}", gateway.address());
@@ -145,6 +170,16 @@ async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
         }
         Err(error) => {
             let message = safe_error(error);
+            // Best-effort recovery keeps an already valid workspace reachable
+            // when a new port or route configuration is rejected.
+            if let Ok(old_entries) = gateway_entries(&previous_workspace, &state.repository, &state.secret_store) {
+                if let Ok(old_gateway) = apiarray_runtime::gateway::LocalGateway::start(
+                    gateway_socket_address(&previous_workspace.gateway.listen_address, previous_workspace.gateway.port)?,
+                    old_entries,
+                ).await {
+                    *state.gateway.lock().await = Some(old_gateway);
+                }
+            }
             *state.gateway_error.lock().await = Some(message.clone());
             Err(message)
         }
@@ -169,7 +204,16 @@ fn gateway_entries(workspace: &WorkspacePackage, repository: &impl RepositoryAcc
     for project in workspace.projects.projects.values() {
         for canvas in project.canvases.values() {
             if let Some(publisher_id) = &canvas.publisher_id && workspace.runtime_state.enabled_publishers.contains(publisher_id) {
-                prefixes.push((format!("/canvas/{}", canvas.id), publisher_id.clone()));
+                let compiled = compile_graph(&canvas.graph, &workspace.wallet, &workspace.runtime)
+                    .map_err(|error| format!("Canvas {}/{} compilation blocked: {}", project.id, canvas.id, error.message))?;
+                if let Some(publisher) = runtime.publishers.get_mut(publisher_id) {
+                    publisher.routes = compiled.routes;
+                } else {
+                    return Err(format!("Canvas {}/{} references a missing Publisher", project.id, canvas.id));
+                }
+                // Canvas IDs are only unique within a Project. Keep the public
+                // route explicitly scoped so two Projects can never collide.
+                prefixes.push((format!("/canvas/{}/{}", project.id, canvas.id), publisher_id.clone()));
             }
         }
     }
@@ -376,6 +420,7 @@ fn open_control_plane(
 fn to_desktop_control_snapshot(
     snapshot: ControlPlaneSnapshot,
     provider_count: usize,
+    notifications: Vec<apiarray_runtime::persistence::StoredNotification>,
 ) -> DesktopControlSnapshot {
     DesktopControlSnapshot {
         workspace_id: snapshot.workspace_id,
@@ -398,13 +443,16 @@ fn to_desktop_control_snapshot(
                 .collect(),
             running_count: snapshot.supervisor.running_count,
         },
-        notifications: snapshot
-            .notifications
+        notifications: notifications
             .into_iter()
             .map(|notification| DesktopNotification {
-                id: notification.key,
-                message: notification.event.summary,
-                created_at: notification.last_seen_unix_ms,
+                id: notification.id,
+                message: notification.summary,
+                created_at: notification.last_seen_at_ms,
+                level: notification.level,
+                object_id: notification.object_id,
+                occurrence_count: notification.occurrence_count,
+                read: notification.read,
             })
             .collect(),
     }

@@ -56,7 +56,7 @@ async fn build_control_center_snapshot(state: &DesktopState) -> Result<ControlCe
     let gateway_running = gateway.is_some();
     let mounted = gateway.as_ref().map(|item| item.entry_prefixes().iter().cloned().collect::<BTreeSet<_>>()).unwrap_or_default();
     let gateway_error = state.gateway_error.lock().await.clone();
-    let base = format!("http://{}:{}", workspace.gateway.listen_address, workspace.gateway.port);
+    let base = gateway_origin(&workspace.gateway.listen_address, workspace.gateway.port);
     let mut instances = Vec::new();
 
     for endpoint in workspace.direct_endpoints.values() {
@@ -93,7 +93,7 @@ async fn build_control_center_snapshot(state: &DesktopState) -> Result<ControlCe
             let id = managed_instance_id(ManagedInstanceKind::Canvas, &project.id, Some(&canvas.id));
             let publisher = canvas.publisher_id.as_ref().and_then(|publisher_id| workspace.runtime.publishers.get(publisher_id));
             let desired_running = canvas.publisher_id.as_ref().is_some_and(|publisher_id| workspace.runtime_state.enabled_publishers.contains(publisher_id));
-            let prefix = format!("/canvas/{}", canvas.id);
+            let prefix = format!("/canvas/{}/{}", project.id, canvas.id);
             let actual_running = gateway_running && mounted.contains(&prefix);
             let mut blocking_reasons = Vec::new();
             let asset_ids = canvas.graph.nodes.iter().filter_map(|node| node.config.get("asset_id").and_then(Value::as_str)).collect::<BTreeSet<_>>();

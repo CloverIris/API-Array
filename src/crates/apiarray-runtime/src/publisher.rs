@@ -82,6 +82,9 @@ impl PublisherState {
 
 async fn models(State(state): State<PublisherState>, headers: HeaderMap) -> Response {
     let request_id = correlation_id(&headers);
+    if !state.executor.audit_healthy() {
+        return with_correlation_id(runtime_error_response(RuntimeError::new(RuntimeErrorCode::AuditUnavailable, "audit storage is unavailable")), &request_id);
+    }
     if let Err(error) = authorize(&state, &headers) {
         return with_correlation_id(runtime_error_response(error), &request_id);
     }
@@ -177,6 +180,9 @@ async fn chat_completions(
     payload: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let request_id = correlation_id(&headers);
+    if !state.executor.audit_healthy() {
+        return with_correlation_id(runtime_error_response(RuntimeError::new(RuntimeErrorCode::AuditUnavailable, "audit storage is unavailable")), &request_id);
+    }
     if let Err(error) = authorize(&state, &headers) {
         return with_correlation_id(runtime_error_response(error), &request_id);
     }

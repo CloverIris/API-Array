@@ -13,6 +13,7 @@ use std::future::Future;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -201,6 +202,7 @@ pub struct ResilientExecutor {
     health_policy: HealthPolicy,
     health: Arc<RwLock<BTreeMap<String, EndpointHealth>>>,
     audit: Arc<dyn AuditSink>,
+    audit_healthy: Arc<AtomicBool>,
 }
 
 impl ResilientExecutor {
@@ -216,6 +218,7 @@ impl ResilientExecutor {
             health_policy: HealthPolicy::default(),
             health: Arc::new(RwLock::new(BTreeMap::new())),
             audit,
+            audit_healthy: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -229,7 +232,14 @@ impl ResilientExecutor {
     }
 
     pub fn record(&self, trace: &ExecutionTrace) {
-        let _ = self.audit.record(trace);
+        if self.audit.record(trace).is_err() {
+            self.audit_healthy.store(false, AtomicOrdering::Release);
+        }
+    }
+
+    #[must_use]
+    pub fn audit_healthy(&self) -> bool {
+        self.audit_healthy.load(AtomicOrdering::Acquire)
     }
 
     /// 执行带重试、切换、健康回写和审计的非流式请求。

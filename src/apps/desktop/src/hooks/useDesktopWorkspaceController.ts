@@ -45,15 +45,38 @@ export function useDesktopWorkspaceController() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshInFlight = useRef<Promise<void> | null>(null);
+  const refreshPending = useRef(false);
 
   const refresh = useCallback(async () => {
-    try {
+    if (refreshInFlight.current) {
+      refreshPending.current = true;
+      return refreshInFlight.current;
+    }
+    const operation = (async () => {
       setError(null);
-      const [nextSnapshot, nextTree, nextWallet] = await Promise.all([getDesktopSnapshot(), getProjectTree(), getWalletGallery()]);
-      setSnapshot(nextSnapshot);
-      setProjectTree(normalizeProjectTree(nextTree));
-      setWallet(nextWallet.filter((item) => item.source === "asset"));
-    } catch (reason) { setError(readError(reason)); } finally { setLoading(false); }
+      const results = await Promise.allSettled([getDesktopSnapshot(), getProjectTree(), getWalletGallery()]);
+      const [snapshotResult, treeResult, walletResult] = results;
+      const errors: string[] = [];
+      if (snapshotResult.status === "fulfilled") setSnapshot(snapshotResult.value); else errors.push(readError(snapshotResult.reason));
+      if (treeResult.status === "fulfilled") {
+        const normalized = normalizeProjectTree(treeResult.value);
+        setProjectTree(normalized);
+        setUiState((current) => {
+          const project = current.selectedProjectId ? normalized.projects[current.selectedProjectId] : undefined;
+          const canvas = project && current.selectedCanvasId ? project.canvases[current.selectedCanvasId] : undefined;
+          return project && canvas ? current : { ...current, selectedProjectId: null, selectedCanvasId: null };
+        });
+      } else errors.push(readError(treeResult.reason));
+      if (walletResult.status === "fulfilled") setWallet(walletResult.value.filter((item) => item.source === "asset")); else errors.push(readError(walletResult.reason));
+      if (errors.length) setError(errors.join("\n"));
+      setLoading(false);
+    })();
+    refreshInFlight.current = operation;
+    try { await operation; } finally {
+      refreshInFlight.current = null;
+      if (refreshPending.current) { refreshPending.current = false; void refresh(); }
+    }
   }, []);
 
   const refreshControlCenter = useCallback(async () => {

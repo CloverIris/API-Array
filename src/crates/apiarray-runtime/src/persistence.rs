@@ -1,6 +1,6 @@
 use crate::{RuntimeError, RuntimeErrorCode};
 use crate::resilience::ExecutionTrace;
-use apiarray_core::inspection::InspectionReport;
+use apiarray_core::{events::AggregatedNotification, inspection::InspectionReport};
 use apiarray_core::workspace::{WorkspaceLoad, WorkspacePackage, load_workspace_json};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const DATABASE_FILE: &str = "workspace.sqlite3";
-const STORAGE_SCHEMA_VERSION: u32 = 1;
+const STORAGE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceRecovery {
@@ -44,6 +44,35 @@ pub struct WorkspaceBackup {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceLocation { pub id: String, pub name: String, pub root: PathBuf, pub last_opened_at_ms: u64 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredNotification {
+    pub id: String,
+    pub level: String,
+    pub object_id: String,
+    pub summary: String,
+    pub occurrence_count: u32,
+    pub first_seen_at_ms: u64,
+    pub last_seen_at_ms: u64,
+    pub read: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NotificationQuery { pub unread_only: bool, pub limit: usize }
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AuditQuery {
+    pub limit: usize,
+    pub offset: usize,
+    pub result: Option<AuditResultFilter>,
+    pub publisher_id: Option<String>,
+    pub model: Option<String>,
+    pub from_ms: Option<u64>,
+    pub to_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditResultFilter { Success, Failure, ClientDisconnected }
 
 #[derive(Debug, Clone)]
 pub struct LauncherRepository { path: PathBuf }
@@ -84,7 +113,11 @@ pub trait StorageService: Send + Sync {
     fn read_setting(&self, key: &str) -> Result<Option<String>, RuntimeError>;
     fn write_setting(&self, key: &str, value: &str) -> Result<(), RuntimeError>;
     fn record_audit(&self, trace: &ExecutionTrace) -> Result<(), RuntimeError>;
-    fn read_audit(&self, limit: usize) -> Result<Vec<ExecutionTrace>, RuntimeError>;
+    fn read_audit(&self, query: AuditQuery) -> Result<Vec<ExecutionTrace>, RuntimeError>;
+    fn upsert_notification(&self, notification: &AggregatedNotification) -> Result<bool, RuntimeError>;
+    fn read_notifications(&self, query: NotificationQuery) -> Result<Vec<StoredNotification>, RuntimeError>;
+    fn mark_notifications_read(&self, ids: &[String]) -> Result<(), RuntimeError>;
+    fn clear_read_notifications(&self) -> Result<usize, RuntimeError>;
     fn save_inspection(&self, report: &InspectionReport) -> Result<(), RuntimeError>;
     fn load_inspection(&self, provider_id: &str) -> Result<Option<InspectionReport>, RuntimeError>;
 }
@@ -194,11 +227,40 @@ impl StorageService for SqliteStorageService {
         Ok(())
     }
 
-    fn read_audit(&self, limit: usize) -> Result<Vec<ExecutionTrace>, RuntimeError> {
+    fn read_audit(&self, query: AuditQuery) -> Result<Vec<ExecutionTrace>, RuntimeError> {
         let connection = self.connect()?;
-        let mut statement = connection.prepare("SELECT payload_json FROM audit_records ORDER BY created_at_ms DESC,id DESC LIMIT ?1").map_err(database_error)?;
-        let rows = statement.query_map([i64::try_from(limit.clamp(1, 1_000)).unwrap_or(1_000)], |row| row.get::<_, String>(0)).map_err(database_error)?;
+        let mut statement = connection.prepare("SELECT payload_json FROM audit_records WHERE (?1 IS NULL OR result=?1) AND (?2 IS NULL OR subject_id=?2) AND (?3 IS NULL OR model=?3) AND (?4 IS NULL OR created_at_ms>=?4) AND (?5 IS NULL OR created_at_ms<=?5) ORDER BY created_at_ms DESC,id DESC LIMIT ?6 OFFSET ?7").map_err(database_error)?;
+        let result = query.result.map(|value| match value { AuditResultFilter::Success => "success", AuditResultFilter::Failure => "failure", AuditResultFilter::ClientDisconnected => "client_disconnected" });
+        let rows = statement.query_map(params![result, query.publisher_id, query.model, query.from_ms.and_then(|value| i64::try_from(value).ok()), query.to_ms.and_then(|value| i64::try_from(value).ok()), i64::try_from(query.limit.clamp(1, 200)).unwrap_or(200), i64::try_from(query.offset).unwrap_or(i64::MAX)], |row| row.get::<_, String>(0)).map_err(database_error)?;
         rows.map(|row| row.map_err(database_error).and_then(|payload| serde_json::from_str(&payload).map_err(serialization_error))).collect()
+    }
+
+    fn upsert_notification(&self, notification: &AggregatedNotification) -> Result<bool, RuntimeError> {
+        let level = serde_json::to_string(&notification.level).map_err(serialization_error)?.trim_matches('"').to_owned();
+        let connection = self.connect()?;
+        let previous = connection.query_row("SELECT occurrence_count,last_seen_at_ms FROM notifications WHERE id=?1", [&notification.key], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).optional().map_err(database_error)?;
+        let changed = previous.is_none_or(|(count, seen)| count != i64::from(notification.event.occurrence_count) || seen != i64::try_from(notification.last_seen_unix_ms).unwrap_or(i64::MAX));
+        connection.execute("INSERT INTO notifications(id,level,object_id,summary,occurrence_count,first_seen_at_ms,last_seen_at_ms,read) VALUES(?1,?2,?3,?4,?5,?6,?7,0) ON CONFLICT(id) DO UPDATE SET level=excluded.level,object_id=excluded.object_id,summary=excluded.summary,occurrence_count=excluded.occurrence_count,last_seen_at_ms=excluded.last_seen_at_ms,read=CASE WHEN notifications.occurrence_count<>excluded.occurrence_count OR notifications.last_seen_at_ms<>excluded.last_seen_at_ms THEN 0 ELSE notifications.read END", params![notification.key, level, notification.event.object_id, notification.event.summary, i64::from(notification.event.occurrence_count), i64::try_from(notification.first_seen_unix_ms).unwrap_or(i64::MAX), i64::try_from(notification.last_seen_unix_ms).unwrap_or(i64::MAX)]).map_err(database_error)?;
+        Ok(changed)
+    }
+
+    fn read_notifications(&self, query: NotificationQuery) -> Result<Vec<StoredNotification>, RuntimeError> {
+        let connection = self.connect()?;
+        let mut statement = connection.prepare("SELECT id,level,object_id,summary,occurrence_count,first_seen_at_ms,last_seen_at_ms,read FROM notifications WHERE (?1=0 OR read=0) ORDER BY last_seen_at_ms DESC,id DESC LIMIT ?2").map_err(database_error)?;
+        let rows = statement.query_map(params![if query.unread_only { 1 } else { 0 }, i64::try_from(query.limit.clamp(1, 500)).unwrap_or(500)], |row| Ok(StoredNotification { id: row.get(0)?, level: row.get(1)?, object_id: row.get(2)?, summary: row.get(3)?, occurrence_count: u32::try_from(row.get::<_, i64>(4)?).unwrap_or(u32::MAX), first_seen_at_ms: u64::try_from(row.get::<_, i64>(5)?).unwrap_or(0), last_seen_at_ms: u64::try_from(row.get::<_, i64>(6)?).unwrap_or(0), read: row.get::<_, i64>(7)? != 0 })).map_err(database_error)?;
+        rows.map(|row| row.map_err(database_error)).collect()
+    }
+
+    fn mark_notifications_read(&self, ids: &[String]) -> Result<(), RuntimeError> {
+        if ids.is_empty() { return Ok(()); }
+        let mut connection = self.connect()?;
+        let transaction = connection.transaction().map_err(database_error)?;
+        for id in ids { transaction.execute("UPDATE notifications SET read=1 WHERE id=?1", [id]).map_err(database_error)?; }
+        transaction.commit().map_err(database_error)
+    }
+
+    fn clear_read_notifications(&self) -> Result<usize, RuntimeError> {
+        self.connect()?.execute("DELETE FROM notifications WHERE read=1", []).map_err(database_error)
     }
 
     fn save_inspection(&self, report: &InspectionReport) -> Result<(), RuntimeError> {
@@ -235,7 +297,12 @@ impl WorkspaceRepository {
     pub fn read_setting(&self, key: &str) -> Result<Option<String>, RuntimeError> { self.storage.read_setting(key) }
     pub fn write_setting(&self, key: &str, value: &str) -> Result<(), RuntimeError> { self.storage.write_setting(key, value) }
     pub fn record_audit(&self, trace: &ExecutionTrace) -> Result<(), RuntimeError> { self.storage.record_audit(trace) }
-    pub fn read_audit(&self, limit: usize) -> Result<Vec<ExecutionTrace>, RuntimeError> { self.storage.read_audit(limit) }
+    pub fn read_audit(&self, limit: usize) -> Result<Vec<ExecutionTrace>, RuntimeError> { self.storage.read_audit(AuditQuery { limit, ..AuditQuery::default() }) }
+    pub fn query_audit(&self, query: AuditQuery) -> Result<Vec<ExecutionTrace>, RuntimeError> { self.storage.read_audit(query) }
+    pub fn upsert_notification(&self, notification: &AggregatedNotification) -> Result<bool, RuntimeError> { self.storage.upsert_notification(notification) }
+    pub fn read_notifications(&self, query: NotificationQuery) -> Result<Vec<StoredNotification>, RuntimeError> { self.storage.read_notifications(query) }
+    pub fn mark_notifications_read(&self, ids: &[String]) -> Result<(), RuntimeError> { self.storage.mark_notifications_read(ids) }
+    pub fn clear_read_notifications(&self) -> Result<usize, RuntimeError> { self.storage.clear_read_notifications() }
     pub fn save_inspection(&self, report: &InspectionReport) -> Result<(), RuntimeError> { self.storage.save_inspection(report) }
     pub fn load_inspection(&self, provider_id: &str) -> Result<Option<InspectionReport>, RuntimeError> { self.storage.load_inspection(provider_id) }
     pub fn clear_workspace_files(&self) -> Result<(), RuntimeError> {
@@ -261,9 +328,14 @@ fn initialize_schema(connection: &Connection) -> Result<(), RuntimeError> {
         CREATE TABLE IF NOT EXISTS inspections(provider_id TEXT PRIMARY KEY, updated_at_ms INTEGER NOT NULL, payload_json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS audit_records(id INTEGER PRIMARY KEY AUTOINCREMENT, created_at_ms INTEGER NOT NULL, subject_type TEXT NOT NULL, subject_id TEXT NOT NULL, model TEXT, result TEXT NOT NULL, latency_ms INTEGER, input_tokens INTEGER, output_tokens INTEGER, estimated_cost_micros INTEGER, payload_json TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS audit_subject_time ON audit_records(subject_type,subject_id,created_at_ms DESC);
+        CREATE TABLE IF NOT EXISTS notifications(id TEXT PRIMARY KEY,level TEXT NOT NULL,object_id TEXT NOT NULL,summary TEXT NOT NULL,occurrence_count INTEGER NOT NULL,first_seen_at_ms INTEGER NOT NULL,last_seen_at_ms INTEGER NOT NULL,read INTEGER NOT NULL DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS notifications_seen ON notifications(read,last_seen_at_ms DESC);
     "#)).map_err(database_error)?;
     let version: i64 = connection.query_row("SELECT version FROM storage_schema LIMIT 1", [], |row| row.get(0)).map_err(database_error)?;
-    if version != i64::from(STORAGE_SCHEMA_VERSION) { return Err(RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "工作区数据库版本不受支持")); }
+    if version > i64::from(STORAGE_SCHEMA_VERSION) { return Err(RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "工作区数据库版本高于当前应用支持范围")); }
+    if version < i64::from(STORAGE_SCHEMA_VERSION) {
+        connection.execute("UPDATE storage_schema SET version=?1", [i64::from(STORAGE_SCHEMA_VERSION)]).map_err(database_error)?;
+    }
     Ok(())
 }
 
@@ -340,5 +412,21 @@ mod tests {
         assert_eq!(launcher.active_root()?, Some(descriptor.root.clone()));
         assert_eq!(launcher.locations()?.first().map(|item| item.id.as_str()), Some("workspace-a"));
         let _ = fs::remove_dir_all(root); Ok(())
+    }
+
+    #[test]
+    fn persists_and_marks_aggregated_notifications() -> Result<(), RuntimeError> {
+        use apiarray_core::events::{HealthTransition, NotificationEvent, NotificationLevel};
+        let repository = repository();
+        repository.save(&workspace())?;
+        let mut center = apiarray_core::events::NotificationCenter::default();
+        let record = center.ingest(NotificationEvent { schema_version: 1, object_id: "publisher-a".to_owned(), transition: HealthTransition::Failed, occurrence_count: 1, summary: "safe failure".to_owned() }, None, NotificationLevel::ActionRequired, 42);
+        assert!(repository.upsert_notification(&record)?);
+        assert_eq!(repository.read_notifications(NotificationQuery { unread_only: true, limit: 10 })?.len(), 1);
+        repository.mark_notifications_read(&[record.key])?;
+        assert!(repository.read_notifications(NotificationQuery { unread_only: true, limit: 10 })?.is_empty());
+        assert_eq!(repository.clear_read_notifications()?, 1);
+        let _ = fs::remove_dir_all(repository.root());
+        Ok(())
     }
 }

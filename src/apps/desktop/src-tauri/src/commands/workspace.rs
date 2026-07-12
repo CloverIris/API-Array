@@ -4,6 +4,12 @@ fn workspace_ui_state(state: State<'_, DesktopState>) -> WorkspaceUiState {
 }
 
 #[tauri::command]
+fn application_version() -> Result<ApplicationVersion, String> {
+    serde_json::from_str(include_str!("../../../../../product-version.json"))
+        .map_err(|error| format!("无法读取应用版本信息：{error}"))
+}
+
+#[tauri::command]
 fn save_workspace_ui_state(
     mut ui_state: WorkspaceUiState,
     state: State<'_, DesktopState>,
@@ -111,7 +117,51 @@ fn audit_records(
     query: AuditQuery,
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ExecutionTrace>, String> {
-    state.repository.read_audit(query.limit.unwrap_or(100)).map_err(safe_error)
+    let result = match query.result.as_deref() {
+        None | Some("all") => None,
+        Some("success") => Some(apiarray_runtime::persistence::AuditResultFilter::Success),
+        Some("failure") => Some(apiarray_runtime::persistence::AuditResultFilter::Failure),
+        Some("client_disconnected") => Some(apiarray_runtime::persistence::AuditResultFilter::ClientDisconnected),
+        Some(_) => return Err("不支持的运行结果筛选条件。".to_owned()),
+    };
+    state.repository.query_audit(apiarray_runtime::persistence::AuditQuery {
+        limit: query.limit.unwrap_or(100),
+        offset: query.offset.unwrap_or(0),
+        result,
+        publisher_id: query.publisher_id.filter(|value| !value.trim().is_empty()),
+        model: query.model.filter(|value| !value.trim().is_empty()),
+        from_ms: query.from_ms,
+        to_ms: query.to_ms,
+    }).map_err(safe_error)
+}
+
+#[tauri::command]
+fn notifications(query: NotificationQueryInput, state: State<'_, DesktopState>) -> Result<Vec<apiarray_runtime::persistence::StoredNotification>, String> {
+    state.repository.read_notifications(apiarray_runtime::persistence::NotificationQuery {
+        unread_only: query.unread_only.unwrap_or(false),
+        limit: query.limit.unwrap_or(200),
+    }).map_err(safe_error)
+}
+
+#[tauri::command]
+fn mark_notifications_read(input: NotificationIdsInput, state: State<'_, DesktopState>) -> Result<(), String> {
+    state.repository.mark_notifications_read(&input.ids).map_err(safe_error)
+}
+
+#[tauri::command]
+fn clear_read_notifications(state: State<'_, DesktopState>) -> Result<usize, String> {
+    state.repository.clear_read_notifications().map_err(safe_error)
+}
+
+#[tauri::command]
+fn desktop_notification_preference(state: State<'_, DesktopState>) -> Result<DesktopNotificationPreference, String> {
+    Ok(DesktopNotificationPreference { system_notifications: state.repository.read_setting("desktop.system_notifications").map_err(safe_error)?.map_or(true, |value| value != "false") })
+}
+
+#[tauri::command]
+fn save_desktop_notification_preference(input: DesktopNotificationPreferenceInput, state: State<'_, DesktopState>) -> Result<DesktopNotificationPreference, String> {
+    state.repository.write_setting("desktop.system_notifications", if input.system_notifications { "true" } else { "false" }).map_err(safe_error)?;
+    Ok(DesktopNotificationPreference { system_notifications: input.system_notifications })
 }
 
 #[tauri::command]
@@ -124,6 +174,26 @@ fn export_workspace(state: State<'_, DesktopState>) -> Result<String, String> {
 #[tauri::command]
 fn workspace_storage_status(state: State<'_, DesktopState>) -> Result<WorkspaceHealth, String> {
     state.repository.health().map_err(safe_error)
+}
+
+#[tauri::command]
+async fn update_gateway_settings(input: GatewaySettingsInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<DesktopSnapshot, String> {
+    if input.port < 1024 { return Err("本地端口必须大于等于 1024。".to_owned()); }
+    gateway_socket_address(input.listen_address.trim(), input.port)?;
+    let previous = load_workspace(&state.repository)?;
+    let mut next = previous.clone();
+    next.gateway.listen_address = input.listen_address.trim().to_owned();
+    next.gateway.port = input.port;
+    next.validate().map_err(|error| error.message)?;
+    state.repository.save(&next).map_err(safe_error)?;
+    if let Err(error) = restart_gateway(&state).await {
+        state.repository.save(&previous).map_err(safe_error)?;
+        let _ = restart_gateway(&state).await;
+        return Err(format!("无法应用新的本地监听设置：{error}"));
+    }
+    let result = snapshot(&state).await?;
+    let _ = app.emit("desktop:instances-changed", ());
+    Ok(result)
 }
 
 #[tauri::command]
@@ -149,6 +219,22 @@ async fn create_workspace_at(input: CreateWorkspaceAtInput, state: State<'_, Des
     let repository = WorkspaceRepository::new(root);
     if repository.exists() { return Err("所选目录已经包含 API ARRAY 工作区。".to_owned()); }
     repository.save(&empty_workspace(&workspace_name(&input.name))).map_err(safe_error)?;
+    activate_repository(repository, &state).await
+}
+
+#[tauri::command]
+async fn create_default_workspace(name: String, app: AppHandle, state: State<'_, DesktopState>) -> Result<DesktopSnapshot, String> {
+    let executable = std::env::current_exe().map_err(|_| "无法定位 API ARRAY 程序目录。".to_owned())?;
+    let root = executable.parent().ok_or_else(|| "无法定位 API ARRAY 程序目录。".to_owned())?.join("workspace");
+    let repository = WorkspaceRepository::new(root);
+    if !repository.exists() {
+        if repository.save(&empty_workspace(&workspace_name(&name))).is_err() {
+            let fallback_root = app.path().app_data_dir().map_err(|error| format!("default workspace is not writable and AppData is unavailable: {error}"))?.join("workspaces").join(DEFAULT_WORKSPACE_ID);
+            let fallback = WorkspaceRepository::new(fallback_root);
+            if !fallback.exists() { fallback.save(&empty_workspace(&workspace_name(&name))).map_err(safe_error)?; }
+            return activate_repository(fallback, &state).await;
+        }
+    }
     activate_repository(repository, &state).await
 }
 

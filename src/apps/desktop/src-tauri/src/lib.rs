@@ -39,6 +39,7 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Mutex;
 
 include!("state.rs");

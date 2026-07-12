@@ -89,6 +89,16 @@ pub struct CanvasCompilationReport {
     pub valid: bool,
     pub public_models: Vec<String>,
     pub candidate_count: usize,
+    #[serde(default)]
+    pub selected_strategy: String,
+    #[serde(default)]
+    pub unreachable_nodes: Vec<String>,
+    #[serde(default)]
+    pub missing_secrets: Vec<String>,
+    #[serde(default)]
+    pub stale_runtime: bool,
+    #[serde(default)]
+    pub requires_confirmation: bool,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
 }
@@ -124,6 +134,8 @@ pub fn compile_canvas_graph(graph: &WorkflowGraph, wallet: &ApiWallet, runtime: 
         let Some(asset_id) = node.config.get("asset_id").and_then(Value::as_str) else { errors.push(format!("Provider {} 未绑定钱包资产。", node.name)); continue; };
         let Some(asset) = wallet.assets.get(asset_id) else { errors.push(format!("Provider {} 引用了不存在的钱包资产。", node.name)); continue; };
         let Some(instance) = runtime.providers.get(&asset.provider_instance_id) else { errors.push(format!("钱包资产 {} 缺少 Provider 实例。", asset.name)); continue; };
+        if !asset.enabled { errors.push(format!("wallet asset {} is disabled", asset.name)); }
+        if !instance.enabled { errors.push(format!("Provider instance {} is disabled", instance.id)); }
         let public_model = node.config.get("public_model").and_then(Value::as_str).filter(|value| !value.trim().is_empty()).unwrap_or("default").to_owned();
         let upstream_model = node.config.get("upstream_model").and_then(Value::as_str).filter(|value| !value.trim().is_empty()).unwrap_or(&public_model).to_owned();
         let priority = node.config.get("priority").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(0);
@@ -133,17 +145,58 @@ pub fn compile_canvas_graph(graph: &WorkflowGraph, wallet: &ApiWallet, runtime: 
     }
     for upstreams in grouped.values_mut() { upstreams.sort_by_key(|upstream| (upstream.priority, upstream.id.clone())); }
     for (model, kinds) in &model_adapters { if kinds.len() > 1 && !allow_degradation { errors.push(format!("公开模型 {model} 包含不同协议的主备候选；请显式允许能力降级或使用不同公开模型名。")); } }
-    if !errors.is_empty() { return Err(CoreError::new(ErrorCode::GraphInvalid, errors.join(" "))); }
     let routes = grouped.into_iter().map(|(public_model, upstreams)| ModelRoute { policy: RoutePolicy { schema_version: SCHEMA_VERSION, id: format!("{}-{public_model}-policy", graph.id), timeout_ms, max_retries, failover_on: HashSet::from([StandardError::ProviderTimeout, StandardError::NetworkUnreachable, StandardError::RateLimited]) }, public_model, upstreams }).collect::<Vec<_>>();
     let mut warnings = if adapters.len() > 1 { vec!["多个上游协议将通过 Canonical Adapter 统一为 OpenAI-compatible。".to_owned()] } else { Vec::new() };
     if allow_degradation && model_adapters.values().any(|kinds| kinds.len() > 1) { warnings.push("跨协议主备已允许能力降级；工具、图像或 JSON 能力可能缩减。".to_owned()); }
-    Ok(CompiledCanvasGraph { report: CanvasCompilationReport { valid: true, public_models: routes.iter().map(|route| route.public_model.clone()).collect(), candidate_count: routes.iter().map(|route| route.upstreams.len()).sum(), warnings, errors: Vec::new() }, routes })
+    let unreachable_nodes = enabled_unreachable_nodes(graph);
+    if !unreachable_nodes.is_empty() {
+        errors.push(format!("enabled nodes cannot reach Publisher: {}", unreachable_nodes.join(", ")));
+    }
+    if !errors.is_empty() {
+        return Err(CoreError::new(ErrorCode::GraphInvalid, errors.join("; ")));
+    }
+    let public_models = routes.iter().map(|route| route.public_model.clone()).collect::<Vec<_>>();
+    Ok(CompiledCanvasGraph { report: CanvasCompilationReport {
+        valid: true,
+        public_models,
+        candidate_count: routes.iter().map(|route| route.upstreams.len()).sum(),
+        selected_strategy: composer.and_then(|node| node.config.get("strategy")).and_then(Value::as_str).unwrap_or("priority_failover").to_owned(),
+        unreachable_nodes,
+        missing_secrets: Vec::new(),
+        stale_runtime: false,
+        requires_confirmation: allow_degradation && model_adapters.values().any(|kinds| kinds.len() > 1),
+        warnings,
+        errors: Vec::new(),
+    }, routes })
 }
 
 fn path_exists(graph: &WorkflowGraph, source: &str, target: &str) -> bool {
     let mut stack = vec![source]; let mut visited = HashSet::new();
-    while let Some(current) = stack.pop() { if current == target { return true; } if !visited.insert(current) { continue; } for edge in graph.edges.iter().filter(|edge| edge.from.node == current) { stack.push(edge.to.node.as_str()); } }
+    while let Some(current) = stack.pop() {
+        if current == target { return true; }
+        if !visited.insert(current) { continue; }
+        for edge in graph.edges.iter().filter(|edge| edge.from.node == current) {
+            if graph.nodes.iter().find(|node| node.id == edge.to.node).is_some_and(|node| node.enabled) {
+                stack.push(edge.to.node.as_str());
+            }
+        }
+    }
     false
+}
+
+fn enabled_unreachable_nodes(graph: &WorkflowGraph) -> Vec<String> {
+    let Some(publisher) = graph.nodes.iter().find(|node| node.kind == NodeKind::Publisher && node.enabled) else {
+        return graph.nodes.iter().filter(|node| node.enabled && node.kind != NodeKind::Group).map(|node| node.id.clone()).collect();
+    };
+    let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in &graph.edges { reverse.entry(edge.to.node.as_str()).or_default().push(edge.from.node.as_str()); }
+    let mut reachable = HashSet::new();
+    let mut stack = vec![publisher.id.as_str()];
+    while let Some(current) = stack.pop() {
+        if !reachable.insert(current) { continue; }
+        if let Some(parents) = reverse.get(current) { stack.extend(parents.iter().copied()); }
+    }
+    graph.nodes.iter().filter(|node| node.enabled && node.kind != NodeKind::Group && !reachable.contains(node.id.as_str())).map(|node| node.id.clone()).collect()
 }
 
 impl WorkflowGraph {

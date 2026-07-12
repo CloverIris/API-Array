@@ -94,6 +94,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
@@ -113,6 +114,7 @@ pub fn run() {
             };
 
             app.manage(DesktopState {
+                app: app.handle().clone(),
                 inspection_reports: ActiveInspectionRepository::new(repository.clone()),
                 probe_runner: ProviderProbeRunner::new(TransportConfig::default()).map_err(
                     |error| {
@@ -147,6 +149,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             desktop_snapshot,
+            application_version,
             provider_catalog,
             wallet_gallery,
             wallet_assets,
@@ -160,7 +163,7 @@ pub fn run() {
             direct_endpoints,
             create_direct_endpoint,
             update_direct_endpoint,
-            delete_direct_endpoint,
+            delete_direct_endpoint_safe,
             start_direct_endpoint,
             pause_direct_endpoint,
             test_direct_endpoint,
@@ -211,11 +214,18 @@ pub fn run() {
             save_workspace_ui_state,
             validate_workflow_graph,
             audit_records,
+            notifications,
+            mark_notifications_read,
+            clear_read_notifications,
+            desktop_notification_preference,
+            save_desktop_notification_preference,
             export_workspace,
             import_workspace,
             workspace_storage_status,
+            update_gateway_settings,
             workspace_locations,
             create_workspace_at,
+            create_default_workspace,
             open_workspace_at,
             relocate_workspace,
             verify_workspace,

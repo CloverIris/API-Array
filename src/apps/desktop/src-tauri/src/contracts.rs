@@ -36,6 +36,10 @@ struct WorkspacePathInput { root: String }
 #[serde(rename_all = "camelCase")]
 struct CreateWorkspaceAtInput { root: String, name: String }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewaySettingsInput { listen_address: String, port: u16 }
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SecretRevealResult { value: String, expires_in_ms: u64, protection: String }
@@ -93,7 +97,31 @@ struct DesktopNotification {
     id: String,
     message: String,
     created_at: u64,
+    level: String,
+    object_id: String,
+    occurrence_count: u32,
+    read: bool,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationQueryInput { unread_only: Option<bool>, limit: Option<usize> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationIdsInput { ids: Vec<String> }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopNotificationPreferenceInput { system_notifications: bool }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopNotificationPreference { system_notifications: bool }
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplicationVersion { version: String, channel: String, display_version: String }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -192,8 +220,10 @@ struct PublisherInput {
     canvas_id: String,
     id: String,
     name: String,
-    port: u16,
-    base_path: Option<String>,
+    #[serde(rename = "port")]
+    _port: u16,
+    #[serde(rename = "basePath")]
+    _base_path: Option<String>,
     token: String,
 }
 
@@ -201,6 +231,12 @@ struct PublisherInput {
 #[serde(rename_all = "camelCase")]
 struct AuditQuery {
     limit: Option<usize>,
+    offset: Option<usize>,
+    result: Option<String>,
+    publisher_id: Option<String>,
+    model: Option<String>,
+    from_ms: Option<u64>,
+    to_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -78,18 +78,26 @@ async fn create_wallet_asset(
         .wallet
         .assets
         .insert(asset_id.clone(), asset.clone());
+    let mut created_reference = None;
     if let Some(api_key) = input.api_key.filter(|value| !value.trim().is_empty()) {
         let field = manifest.authentication.fields.iter().find(|field| field.secret && field.required).map(|field| field.id.clone()).unwrap_or_else(|| "api_key".to_owned());
         let reference = SecretRef::parse(format!("secret://wallet/{asset_id}/{field}")).map_err(|error| error.message)?;
         state.secret_store.put(&reference, SecretValue::new(api_key)).map_err(safe_error)?;
+        created_reference = Some(reference.clone());
         if let Some(provider) = workspace.runtime.providers.get_mut(&asset.provider_instance_id) {
             provider.secret_refs.insert(field, reference);
             provider.enabled = true;
         }
     }
-    workspace.validate().map_err(|error| error.message)?;
+    if let Err(error) = workspace.validate() {
+        if let Some(reference) = created_reference.as_ref() { let _ = state.secret_store.delete(reference); }
+        return Err(error.message);
+    }
     ensure_no_running_publishers(&state).await?;
-    state.repository.save(&workspace).map_err(safe_error)?;
+    if let Err(error) = state.repository.save(&workspace) {
+        if let Some(reference) = created_reference.as_ref() { let _ = state.secret_store.delete(reference); }
+        return Err(safe_error(error));
+    }
     reload_control_plane(&state).await?;
     Ok(WalletCard {
         id: asset.id,
@@ -138,8 +146,10 @@ async fn delete_wallet_asset(asset_id: String, state: State<'_, DesktopState>) -
     let impact = wallet_asset_impact(asset_id.clone(), state.clone())?;
     if !impact.direct_endpoints.is_empty() || !impact.canvases.is_empty() { return Err(format!("该资产仍被 {} 个直出端点和 {} 个 Canvas 引用。", impact.direct_endpoints.len(), impact.canvases.len())); }
     let mut workspace = load_workspace(&state.repository)?; let asset = workspace.wallet.assets.remove(&asset_id).ok_or_else(|| "API 钱包资产不存在。".to_owned())?;
-    if let Some(provider) = workspace.runtime.providers.remove(&asset.provider_instance_id) { for reference in provider.secret_refs.values() { let _ = state.secret_store.delete(reference); } }
-    workspace.validate().map_err(|error| error.message)?; state.repository.save(&workspace).map_err(safe_error)?; reload_control_plane(&state).await?; wallet_cards(&state)
+    let secret_refs = workspace.runtime.providers.remove(&asset.provider_instance_id).map(|provider| provider.secret_refs.values().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    workspace.validate().map_err(|error| error.message)?; state.repository.save(&workspace).map_err(safe_error)?;
+    for reference in secret_refs { let _ = state.secret_store.delete(&reference); }
+    reload_control_plane(&state).await?; restart_gateway(&state).await?; wallet_cards(&state)
 }
 
 #[tauri::command]
@@ -147,9 +157,10 @@ async fn delete_wallet_asset_secret(asset_id: String, state: State<'_, DesktopSt
     let mut workspace = load_workspace(&state.repository)?;
     let asset = workspace.wallet.assets.get(&asset_id).ok_or_else(|| "API 钱包资产不存在。".to_owned())?;
     let provider = workspace.runtime.providers.get_mut(&asset.provider_instance_id).ok_or_else(|| "Provider 实例不存在。".to_owned())?;
-    for reference in provider.secret_refs.values() { let _ = state.secret_store.delete(reference); }
+    let secret_refs = provider.secret_refs.values().cloned().collect::<Vec<_>>();
     provider.secret_refs.clear();
     state.repository.save(&workspace).map_err(safe_error)?;
+    for reference in secret_refs { let _ = state.secret_store.delete(&reference); }
     reload_control_plane(&state).await?;
     restart_gateway(&state).await?;
     wallet_cards(&state)
@@ -200,7 +211,7 @@ async fn create_direct_endpoint(input: DirectEndpointInput, state: State<'_, Des
     let mut workspace = load_workspace(&state.repository)?; if !workspace.wallet.assets.contains_key(&input.asset_id) { return Err("钱包资产不存在。".to_owned()); }
     let base = normalize_id(&input.name, "direct"); let id = unique_map_id(&workspace.direct_endpoints, &base); let token_ref = SecretRef::parse(format!("secret://direct/{id}/token")).map_err(|error| error.message)?;
     let endpoint = DirectEndpoint { id: id.clone(), name: limited_name(&input.name, "Direct endpoint"), alias: normalize_id(&input.alias, "direct"), asset_id: input.asset_id, token_ref: token_ref.clone(), enabled: false, models: vec![DirectModelMapping { public_model: limited_name(&input.public_model, "default"), upstream_model: limited_name(&input.upstream_model, "default") }], timeout_ms: input.timeout_ms.unwrap_or(30_000), max_retries: input.max_retries.unwrap_or(2), audit_tags: BTreeMap::new(), billing_override: input.monthly_budget_micros.map(|budget| BillingPolicy { monthly_budget_micros: Some(budget), currency: input.currency, rules: Vec::new() }) };
-    workspace.direct_endpoints.insert(id, endpoint); workspace.validate().map_err(|error| error.message)?; state.secret_store.put(&token_ref, SecretValue::new(input.token)).map_err(safe_error)?; state.repository.save(&workspace).map_err(safe_error)?; restart_gateway(&state).await?; direct_endpoint_items(&state)
+    workspace.direct_endpoints.insert(id, endpoint); workspace.validate().map_err(|error| error.message)?; state.secret_store.put(&token_ref, SecretValue::new(input.token)).map_err(safe_error)?; if let Err(error) = state.repository.save(&workspace) { let _ = state.secret_store.delete(&token_ref); return Err(safe_error(error)); } restart_gateway(&state).await?; direct_endpoint_items(&state)
 }
 
 #[tauri::command]
@@ -219,7 +230,16 @@ async fn start_direct_endpoint(input: DirectEndpointActionInput, app: AppHandle,
 async fn pause_direct_endpoint(input: DirectEndpointActionInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { let result = set_direct_endpoint_enabled(&input.endpoint_id, false, &state).await?; let _ = app.emit("desktop:instances-changed", ()); Ok(result) }
 
 #[tauri::command]
-async fn delete_direct_endpoint(input: DirectEndpointActionInput, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { let mut workspace = load_workspace(&state.repository)?; let endpoint = workspace.direct_endpoints.remove(&input.endpoint_id).ok_or_else(|| "直出端点不存在。".to_owned())?; let _ = state.secret_store.delete(&endpoint.token_ref); state.repository.save(&workspace).map_err(safe_error)?; restart_gateway(&state).await?; direct_endpoint_items(&state) }
+async fn delete_direct_endpoint_safe(input: DirectEndpointActionInput, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> {
+    let mut workspace = load_workspace(&state.repository)?;
+    let endpoint = workspace.direct_endpoints.remove(&input.endpoint_id).ok_or_else(|| "direct endpoint not found".to_owned())?;
+    let token_ref = endpoint.token_ref.clone();
+    workspace.validate().map_err(|error| error.message)?;
+    state.repository.save(&workspace).map_err(safe_error)?;
+    state.secret_store.delete(&token_ref).map_err(safe_error)?;
+    restart_gateway(&state).await?;
+    direct_endpoint_items(&state)
+}
 
 #[tauri::command]
 fn direct_endpoint_templates(endpoint_id: String, state: State<'_, DesktopState>) -> Result<Vec<CodeTemplate>, String> {
@@ -595,7 +615,7 @@ async fn canvas_snapshot(
     };
     let publisher = canvas.publisher_id.as_ref().and_then(|publisher_id| {
         let runtime = workspace.runtime.publishers.get(publisher_id)?;
-        let summary = runtime.config.validate().ok()?;
+        runtime.config.validate().ok()?;
         let state = control
             .as_ref()
             .and_then(|snapshot| snapshot.supervisor.publishers.get(publisher_id));
@@ -603,7 +623,7 @@ async fn canvas_snapshot(
             id: publisher_id.clone(),
             status: state.map_or(PublisherLifecycle::Stopped, |item| item.lifecycle),
             message: state.and_then(|item| item.last_error.clone()),
-            base_url: summary.base_url,
+            base_url: canvas_endpoint_url(&workspace, &project.id, &canvas.id),
             public_models: runtime
                 .routes
                 .iter()

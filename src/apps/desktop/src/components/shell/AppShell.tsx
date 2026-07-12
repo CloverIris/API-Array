@@ -14,6 +14,7 @@ import { LeftSidebar } from "./LeftSidebar";
 import { RightInspector } from "./RightInspector";
 import { RuntimeStatusBar } from "./RuntimeStatusBar";
 import { UnifiedTopBar } from "./UnifiedTopBar";
+import { AppDialogHost } from "../dialogs/AppDialog";
 
 type Props = {
   control: NonNullable<DesktopSnapshot["control"]>;
@@ -62,9 +63,10 @@ export function AppShell({
 
   return (
     <main className="desktop-shell">
+      <AppDialogHost />
       <UnifiedTopBar
         workspaceName={control.workspaceName}
-        pageLabel={global?.label ?? canvas?.name ?? "Canvas"}
+        pageLabel={global?.label ?? canvas?.name ?? "编组方案"}
         pageIcon={global?.icon ?? Branch}
         runningCount={controlCenter?.runningCount ?? 0}
         wallet={wallet}
@@ -98,7 +100,7 @@ export function AppShell({
           open={shell.rightInspectorOpen}
           pinned={shell.rightInspectorPinned}
           width={shell.rightWidth}
-          title={global?.label ?? canvas?.name ?? "Canvas"}
+          title={global?.label ?? canvas?.name ?? "编组方案"}
           onClose={() => patchShell({ rightInspectorOpen: false })}
           onTogglePin={() => patchShell({ rightInspectorPinned: !shell.rightInspectorPinned })}
           onWidthChange={(rightWidth) => patchShell({ rightWidth })}

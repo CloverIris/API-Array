@@ -17,7 +17,7 @@ export interface ControlSnapshot {
   providerCount: number;
   publisherCount: number;
   supervisor: { publishers: PublisherSnapshot[] };
-  notifications: Array<{ id?: string; message: string; createdAt?: number }>;
+  notifications: Array<{ id: string; message: string; createdAt: number; level: string; objectId: string; occurrenceCount: number; read: boolean }>;
 }
 
 export interface DesktopSnapshot {
@@ -28,6 +28,8 @@ export interface DesktopSnapshot {
 }
 
 export const getDesktopSnapshot = () => invoke<DesktopSnapshot>("desktop_snapshot");
+export interface ApplicationVersion { version: string; channel: string; displayVersion: string }
+export const getApplicationVersion = () => invoke<ApplicationVersion>("application_version");
 
 export const initializeWorkspace = (name: string) =>
   invoke<DesktopSnapshot>("initialize_workspace", { name });
@@ -291,6 +293,27 @@ export interface ExecutionTrace {
   attempts: Array<{ upstream_id: string; provider_instance: string; latency_ms: number; result: string; error?: string }>;
 }
 
+export interface AuditQuery {
+  limit?: number;
+  offset?: number;
+  result?: "all" | "success" | "failure" | "client_disconnected";
+  publisherId?: string;
+  model?: string;
+  fromMs?: number;
+  toMs?: number;
+}
+
+export interface StoredNotification {
+  id: string;
+  level: "silent" | "notification_center" | "system" | "action_required" | string;
+  object_id: string;
+  summary: string;
+  occurrence_count: number;
+  first_seen_at_ms: number;
+  last_seen_at_ms: number;
+  read: boolean;
+}
+
 export const getProviderCatalog = () => invoke<ProviderCatalogItem[]>("provider_catalog");
 export const getWalletGallery = () => invoke<WalletCard[]>("wallet_gallery");
 export const createWalletAsset = (input: { providerId: string; name: string; endpointOverride?: string; monthlyBudgetMicros?: number; currency?: string; apiKey?: string }) => invoke<WalletCard>("create_wallet_asset", { input });
@@ -387,11 +410,13 @@ export interface WorkspaceStorageStatus { healthy: boolean; integrity_message: s
 export interface WorkspaceBackup { path: string; created_at_ms: number; database_bytes: number }
 export interface WorkspaceLocation { id: string; name: string; root: string; last_opened_at_ms: number }
 export const getWorkspaceStorageStatus = () => invoke<WorkspaceStorageStatus>("workspace_storage_status");
+export const updateGatewaySettings = (listenAddress: string, port: number) => invoke<DesktopSnapshot>("update_gateway_settings", { input: { listenAddress, port } });
 export const verifyWorkspace = () => invoke<WorkspaceStorageStatus>("verify_workspace");
 export const backupWorkspace = () => invoke<WorkspaceBackup>("backup_workspace");
 export const compactWorkspace = () => invoke<WorkspaceStorageStatus>("compact_workspace");
 export const getWorkspaceLocations = () => invoke<WorkspaceLocation[]>("workspace_locations");
 export const createWorkspaceAt = (root: string, name: string) => invoke<DesktopSnapshot>("create_workspace_at", { input: { root, name } });
+export const createDefaultWorkspace = (name: string) => invoke<DesktopSnapshot>("create_default_workspace", { name });
 export const openWorkspaceAt = (root: string) => invoke<DesktopSnapshot>("open_workspace_at", { input: { root } });
 export const relocateWorkspace = (root: string) => invoke<DesktopSnapshot>("relocate_workspace", { input: { root } });
 export const testPublisherConnection = (publisherId: string) => invoke<PublisherConnectionTest>("test_publisher_connection", { publisherId });
@@ -401,6 +426,12 @@ export const saveWorkspaceUiState = (uiState: WorkspaceUiState) =>
   invoke<WorkspaceUiState>("save_workspace_ui_state", { uiState });
 export const validateWorkflowGraph = (graph: WorkflowGraph) =>
   invoke<WorkflowValidationResult>("validate_workflow_graph", { graph });
-export const getAuditRecords = (limit = 100) => invoke<ExecutionTrace[]>("audit_records", { query: { limit } });
+export const getAuditRecords = (query: number | AuditQuery = 100) => invoke<ExecutionTrace[]>("audit_records", { query: typeof query === "number" ? { limit: query } : query });
+export const getNotifications = (query: { unreadOnly?: boolean; limit?: number } = {}) => invoke<StoredNotification[]>("notifications", { query });
+export const markNotificationsRead = (ids: string[]) => invoke<void>("mark_notifications_read", { input: { ids } });
+export const clearReadNotifications = () => invoke<number>("clear_read_notifications");
+export interface DesktopNotificationPreference { systemNotifications: boolean }
+export const getDesktopNotificationPreference = () => invoke<DesktopNotificationPreference>("desktop_notification_preference");
+export const saveDesktopNotificationPreference = (systemNotifications: boolean) => invoke<DesktopNotificationPreference>("save_desktop_notification_preference", { input: { systemNotifications } });
 export const exportWorkspace = () => invoke<string>("export_workspace");
 export const importWorkspace = (json: string) => invoke<DesktopSnapshot>("import_workspace", { input: { json } });

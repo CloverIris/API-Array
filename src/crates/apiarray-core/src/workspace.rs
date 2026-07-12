@@ -291,7 +291,7 @@ impl WorkspacePackage {
             }
         }
         for (project_id, project) in &self.projects.projects {
-            if project_id != &project.id || project.name.trim().is_empty() {
+            if project_id != &project.id || project.name.trim().is_empty() || !route_segment(&project.id) {
                 issues.push(ValidationIssue::new(format!("projects.projects.{project_id}"), "PROJECT_INVALID", "Project ID and name must be valid"));
             }
             for (folder_id, folder) in &project.folders {
@@ -305,7 +305,15 @@ impl WorkspacePackage {
                 }
             }
             for (canvas_id, canvas) in &project.canvases {
-                if canvas_id != &canvas.id || canvas.name.trim().is_empty() {
+                if let Some(folder_id) = &canvas.folder_id {
+                    let memberships = project.folders.values().filter(|folder| folder.canvas_ids.iter().filter(|id| *id == canvas_id).count() > 0).count();
+                    if memberships != 1 || !project.folders.get(folder_id).is_some_and(|folder| folder.canvas_ids.iter().any(|id| id == canvas_id)) {
+                        issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.folder_id"), "FOLDER_MEMBERSHIP_MISMATCH", "Canvas folder membership must be bidirectional and unique"));
+                    }
+                } else if project.folders.values().any(|folder| folder.canvas_ids.iter().any(|id| id == canvas_id)) {
+                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}"), "FOLDER_MEMBERSHIP_MISMATCH", "Unfiled Canvas cannot appear in a Folder"));
+                }
+                if canvas_id != &canvas.id || canvas.name.trim().is_empty() || !route_segment(&canvas.id) {
                     issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}"), "CANVAS_INVALID", "Canvas ID and name must be valid"));
                 }
                 if let Some(folder_id) = &canvas.folder_id && !project.folders.contains_key(folder_id) {
@@ -421,6 +429,10 @@ impl WorkspacePackage {
 
 fn asset_and_provider_ready(provider: &crate::runtime::ProviderInstance, available: &BTreeSet<String>) -> bool {
     provider.enabled && provider.secret_refs.values().all(|reference| available.contains(reference.as_str()))
+}
+
+fn route_segment(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 /// 安全加载 POC reset 工作区。旧 V1/V2/V3 一律拒绝加载，不迁移。
