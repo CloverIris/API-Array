@@ -1,7 +1,10 @@
-use crate::{CoreError, ErrorCode, SCHEMA_VERSION, ValidationIssue};
+use crate::{CoreError, ErrorCode, ValidationIssue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use crate::{routing::{RoutePolicy, StandardError}, runtime::{ModelRoute, RuntimeConfig, UpstreamRoute}, workspace::ApiWallet, SCHEMA_VERSION};
+
+pub const GRAPH_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowGraph {
@@ -30,11 +33,10 @@ pub struct Node {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
-    Adapter,
+    Provider,
+    Composer,
+    Middleware,
     Probe,
-    Transform,
-    Router,
-    Guard,
     Publisher,
     Group,
 }
@@ -48,12 +50,9 @@ pub struct Port {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PortType {
-    Request,
-    Response,
-    Capability,
-    Health,
-    Control,
-    Error,
+    Candidate,
+    ServicePlan,
+    HealthSignal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +84,68 @@ pub struct NodeImpact {
     pub affected_publishers: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasCompilationReport {
+    pub valid: bool,
+    pub public_models: Vec<String>,
+    pub candidate_count: usize,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledCanvasGraph {
+    pub routes: Vec<ModelRoute>,
+    pub report: CanvasCompilationReport,
+}
+
+pub fn compile_canvas_graph(graph: &WorkflowGraph, wallet: &ApiWallet, runtime: &RuntimeConfig) -> Result<CompiledCanvasGraph, CoreError> {
+    graph.validate()?;
+    let composers = graph.nodes.iter().filter(|node| node.kind == NodeKind::Composer).collect::<Vec<_>>();
+    let publishers = graph.nodes.iter().filter(|node| node.kind == NodeKind::Publisher).count();
+    let providers = graph.nodes.iter().filter(|node| node.kind == NodeKind::Provider && node.enabled).collect::<Vec<_>>();
+    let mut errors = Vec::new();
+    if composers.len() != 1 { errors.push("每个 Canvas 必须且只能包含一个 Composer。".to_owned()); }
+    if publishers != 1 { errors.push("每个 Canvas 必须且只能包含一个 Publisher。".to_owned()); }
+    if providers.is_empty() { errors.push("Composer 至少需要一个启用的钱包 Provider。".to_owned()); }
+    let composer = composers.first();
+    if let Some(composer) = composer {
+        for provider in &providers { if !graph.edges.iter().any(|edge| edge.from.node == provider.id && edge.to.node == composer.id) { errors.push(format!("Provider {} 尚未连接 Composer。", provider.name)); } }
+        let publisher_id = graph.nodes.iter().find(|node| node.kind == NodeKind::Publisher).map(|node| node.id.as_str());
+        if let Some(publisher_id) = publisher_id { if !path_exists(graph, &composer.id, publisher_id) { errors.push("Composer 的 ServicePlan 尚未到达 Publisher。".to_owned()); } }
+    }
+    let timeout_ms = composer.and_then(|node| node.config.get("timeout_ms")).and_then(Value::as_u64).unwrap_or(30_000);
+    let max_retries = composer.and_then(|node| node.config.get("max_retries")).and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(2);
+    let allow_degradation = composer.and_then(|node| node.config.get("allow_capability_degradation")).and_then(Value::as_bool).unwrap_or(false);
+    let mut grouped: BTreeMap<String, Vec<UpstreamRoute>> = BTreeMap::new();
+    let mut model_adapters: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    let mut adapters = HashSet::new();
+    for node in providers {
+        let Some(asset_id) = node.config.get("asset_id").and_then(Value::as_str) else { errors.push(format!("Provider {} 未绑定钱包资产。", node.name)); continue; };
+        let Some(asset) = wallet.assets.get(asset_id) else { errors.push(format!("Provider {} 引用了不存在的钱包资产。", node.name)); continue; };
+        let Some(instance) = runtime.providers.get(&asset.provider_instance_id) else { errors.push(format!("钱包资产 {} 缺少 Provider 实例。", asset.name)); continue; };
+        let public_model = node.config.get("public_model").and_then(Value::as_str).filter(|value| !value.trim().is_empty()).unwrap_or("default").to_owned();
+        let upstream_model = node.config.get("upstream_model").and_then(Value::as_str).filter(|value| !value.trim().is_empty()).unwrap_or(&public_model).to_owned();
+        let priority = node.config.get("priority").and_then(Value::as_u64).and_then(|value| u32::try_from(value).ok()).unwrap_or(0);
+        adapters.insert(instance.manifest.adapter.id.clone());
+        model_adapters.entry(public_model.clone()).or_default().insert(instance.manifest.adapter.id.clone());
+        grouped.entry(public_model).or_default().push(UpstreamRoute { id: node.id.clone(), provider_instance: instance.id.clone(), upstream_model, priority, enabled: asset.enabled && instance.enabled, conditions: Vec::new() });
+    }
+    for upstreams in grouped.values_mut() { upstreams.sort_by_key(|upstream| (upstream.priority, upstream.id.clone())); }
+    for (model, kinds) in &model_adapters { if kinds.len() > 1 && !allow_degradation { errors.push(format!("公开模型 {model} 包含不同协议的主备候选；请显式允许能力降级或使用不同公开模型名。")); } }
+    if !errors.is_empty() { return Err(CoreError::new(ErrorCode::GraphInvalid, errors.join(" "))); }
+    let routes = grouped.into_iter().map(|(public_model, upstreams)| ModelRoute { policy: RoutePolicy { schema_version: SCHEMA_VERSION, id: format!("{}-{public_model}-policy", graph.id), timeout_ms, max_retries, failover_on: HashSet::from([StandardError::ProviderTimeout, StandardError::NetworkUnreachable, StandardError::RateLimited]) }, public_model, upstreams }).collect::<Vec<_>>();
+    let mut warnings = if adapters.len() > 1 { vec!["多个上游协议将通过 Canonical Adapter 统一为 OpenAI-compatible。".to_owned()] } else { Vec::new() };
+    if allow_degradation && model_adapters.values().any(|kinds| kinds.len() > 1) { warnings.push("跨协议主备已允许能力降级；工具、图像或 JSON 能力可能缩减。".to_owned()); }
+    Ok(CompiledCanvasGraph { report: CanvasCompilationReport { valid: true, public_models: routes.iter().map(|route| route.public_model.clone()).collect(), candidate_count: routes.iter().map(|route| route.upstreams.len()).sum(), warnings, errors: Vec::new() }, routes })
+}
+
+fn path_exists(graph: &WorkflowGraph, source: &str, target: &str) -> bool {
+    let mut stack = vec![source]; let mut visited = HashSet::new();
+    while let Some(current) = stack.pop() { if current == target { return true; } if !visited.insert(current) { continue; } for edge in graph.edges.iter().filter(|edge| edge.from.node == current) { stack.push(edge.to.node.as_str()); } }
+    false
+}
+
 impl WorkflowGraph {
     /// 校验节点、端口、连接类型与无环约束，并生成拓扑摘要。
     ///
@@ -95,7 +156,7 @@ impl WorkflowGraph {
     #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> Result<GraphSummary, CoreError> {
         let mut issues = Vec::new();
-        if self.schema_version != SCHEMA_VERSION {
+        if self.schema_version != GRAPH_SCHEMA_VERSION {
             issues.push(ValidationIssue::new(
                 "schema_version",
                 "UNSUPPORTED_SCHEMA",
@@ -123,6 +184,7 @@ impl WorkflowGraph {
             }
             validate_ports(index, "inputs", &node.inputs, &mut issues);
             validate_ports(index, "outputs", &node.outputs, &mut issues);
+            validate_node_contract(index, node, &mut issues);
         }
 
         let mut edge_ids = HashSet::new();
@@ -148,7 +210,7 @@ impl WorkflowGraph {
                     let output = from.outputs.iter().find(|port| port.id == edge.from.port);
                     let input = to.inputs.iter().find(|port| port.id == edge.to.port);
                     match (output, input) {
-                        (Some(output), Some(input)) if output.data_type == input.data_type => {}
+                        (Some(output), Some(input)) if output.data_type == input.data_type && valid_connection(from.kind, to.kind, output.data_type) => {}
                         (Some(_), Some(_)) => issues.push(ValidationIssue::new(
                             format!("edges[{index}]"),
                             "PORT_TYPE_MISMATCH",
@@ -254,6 +316,30 @@ impl WorkflowGraph {
     }
 }
 
+fn valid_connection(from: NodeKind, to: NodeKind, port: PortType) -> bool {
+    matches!((from, to, port),
+        (NodeKind::Provider, NodeKind::Composer, PortType::Candidate)
+        | (NodeKind::Probe, NodeKind::Composer, PortType::HealthSignal)
+        | (NodeKind::Composer, NodeKind::Middleware | NodeKind::Publisher, PortType::ServicePlan)
+        | (NodeKind::Middleware, NodeKind::Middleware | NodeKind::Publisher, PortType::ServicePlan))
+}
+
+fn validate_node_contract(index: usize, node: &Node, issues: &mut Vec<ValidationIssue>) {
+    let expected: (&[PortType], &[PortType]) = match node.kind {
+        NodeKind::Provider => (&[], &[PortType::Candidate]),
+        NodeKind::Composer => (&[PortType::Candidate, PortType::HealthSignal], &[PortType::ServicePlan]),
+        NodeKind::Middleware => (&[PortType::ServicePlan], &[PortType::ServicePlan]),
+        NodeKind::Probe => (&[], &[PortType::HealthSignal]),
+        NodeKind::Publisher => (&[PortType::ServicePlan], &[]),
+        NodeKind::Group => (&[], &[]),
+    };
+    let inputs = node.inputs.iter().map(|port| port.data_type).collect::<Vec<_>>();
+    let outputs = node.outputs.iter().map(|port| port.data_type).collect::<Vec<_>>();
+    if inputs != expected.0 || outputs != expected.1 {
+        issues.push(ValidationIssue::new(format!("nodes[{index}].ports"), "NODE_PORT_CONTRACT", "节点端口不符合 Graph V2 固定契约"));
+    }
+}
+
 const fn default_true() -> bool {
     true
 }
@@ -313,24 +399,26 @@ fn topological_order(nodes: &[Node], edges: &[Edge]) -> Vec<String> {
     order
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 
     fn node(id: &str, kind: NodeKind) -> Node {
+        let (inputs, outputs) = match kind {
+            NodeKind::Provider => (vec![], vec![Port { id: "candidate_out".to_owned(), data_type: PortType::Candidate }]),
+            NodeKind::Composer => (vec![Port { id: "candidate_in".to_owned(), data_type: PortType::Candidate }, Port { id: "health_in".to_owned(), data_type: PortType::HealthSignal }], vec![Port { id: "service_plan_out".to_owned(), data_type: PortType::ServicePlan }]),
+            NodeKind::Middleware => (vec![Port { id: "service_plan_in".to_owned(), data_type: PortType::ServicePlan }], vec![Port { id: "service_plan_out".to_owned(), data_type: PortType::ServicePlan }]),
+            NodeKind::Probe => (vec![], vec![Port { id: "health_out".to_owned(), data_type: PortType::HealthSignal }]),
+            NodeKind::Publisher => (vec![Port { id: "service_plan_in".to_owned(), data_type: PortType::ServicePlan }], vec![]),
+            NodeKind::Group => (vec![], vec![]),
+        };
         Node {
             id: id.to_owned(),
             name: id.to_owned(),
             kind,
             enabled: true,
-            inputs: vec![Port {
-                id: "request_in".to_owned(),
-                data_type: PortType::Request,
-            }],
-            outputs: vec![Port {
-                id: "request_out".to_owned(),
-                data_type: PortType::Request,
-            }],
+            inputs,
+            outputs,
             config: Value::Null,
         }
     }

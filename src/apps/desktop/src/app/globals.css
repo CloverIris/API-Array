@@ -9,12 +9,9 @@
   --app-raised: color-mix(in srgb, var(--color-surface-elevated) 94%, transparent);
   --app-hover: var(--color-background-secondary-soft-alpha);
   --app-shadow: var(--shadow);
-  --app-port-request: var(--blue-400);
-  --app-port-response: var(--green-500);
-  --app-port-capability: var(--purple-400);
-  --app-port-health: var(--pink-400);
-  --app-port-control: var(--yellow-500);
-  --app-port-error: var(--red-500);
+  --app-port-candidate: var(--blue-400);
+  --app-port-service-plan: var(--green-500);
+  --app-port-health-signal: var(--purple-400);
   color: var(--color-text);
   background: transparent;
   font-family: var(--font-sans);
@@ -148,3 +145,7 @@ button { cursor: pointer; }
 .canvas-blockers { margin: 5px 0 0; color: var(--color-text-warning); font-size: 11px; }
 .workflow-inspector { display: grid; gap: 12px; }
 .workflow-inspector .field-label { display: grid; gap: 6px; }
+.port-candidate .react-flow__handle, .workflow-edge-label.port-candidate { background: var(--app-port-candidate); }
+.port-service_plan .react-flow__handle, .workflow-edge-label.port-service_plan { background: var(--app-port-service-plan); }
+.port-health_signal .react-flow__handle, .workflow-edge-label.port-health_signal { background: var(--app-port-health-signal); }
+.canvas-workspace .wallet-dialog .field-label:nth-of-type(1), .canvas-workspace .wallet-dialog .field-label:nth-of-type(3) { display: none; }

@@ -167,14 +167,9 @@ struct PublisherInput {
     canvas_id: String,
     id: String,
     name: String,
-    provider_instance: String,
-    public_model: String,
-    upstream_model: String,
     port: u16,
     base_path: Option<String>,
     token: String,
-    timeout_ms: Option<u64>,
-    max_retries: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

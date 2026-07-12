@@ -122,7 +122,7 @@ export interface WorkflowGraph {
   nodes: Array<{
     id: string;
     name: string;
-    kind: "adapter" | "probe" | "transform" | "router" | "guard" | "publisher" | "group";
+    kind: "provider" | "composer" | "middleware" | "probe" | "publisher" | "group";
     enabled: boolean;
     inputs: Array<{ id: string; data_type: string }>;
     outputs: Array<{ id: string; data_type: string }>;
@@ -292,15 +292,11 @@ export const createCanvasPublisher = (input: {
   canvasId: string;
   id: string;
   name: string;
-  providerInstance: string;
-  publicModel: string;
-  upstreamModel: string;
   port: number;
   basePath?: string;
   token: string;
-  timeoutMs?: number;
-  maxRetries?: number;
 }) => invoke<DesktopSnapshot>("create_canvas_publisher", { input });
+export const compileCanvasGraph = (projectId: string, canvasId: string) => invoke<{ valid: boolean; publicModels: string[]; candidateCount: number; warnings: string[]; errors: string[] }>("compile_canvas_graph", { input: { projectId, canvasId } });
 export const removePublisher = (publisherId: string) => invoke<DesktopSnapshot>("delete_publisher", { publisherId });
 export const getPublisherPreview = (publisherId: string) => invoke<{ id: string; baseUrl: string; loopbackOnly: boolean; authenticationEnabled: boolean }>("publisher_preview", { publisherId });
 export const getPublisherTemplates = (publisherId: string) => invoke<CodeTemplate[]>("publisher_templates", { publisherId });

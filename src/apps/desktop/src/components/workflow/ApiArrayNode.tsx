@@ -12,7 +12,7 @@ export function ApiArrayNode({ data, selected }: NodeProps<CanvasNode>) {
 
 function kindColor(kind: string): "info" | "success" | "warning" | "secondary" {
   if (kind === "publisher") return "success";
-  if (kind === "guard" || kind === "router") return "warning";
+  if (kind === "composer" || kind === "middleware") return "warning";
   if (kind === "group") return "secondary";
   return "info";
 }

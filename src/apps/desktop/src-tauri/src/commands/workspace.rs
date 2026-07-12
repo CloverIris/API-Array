@@ -208,6 +208,7 @@ async fn run_canvas(
         .graph
         .clone();
     validate_canvas_domain_graph(&workspace, &graph, true)?;
+    let compiled = compile_graph(&graph, &workspace.wallet, &workspace.runtime).map_err(|error| error.message)?;
     let canvas = workspace
         .projects
         .projects
@@ -219,6 +220,7 @@ async fn run_canvas(
     })?;
     canvas.applied_graph = Some(canvas.graph.clone());
     canvas.applied_revision = canvas.draft_revision;
+    if let Some(publisher) = workspace.runtime.publishers.get_mut(&publisher_id) { publisher.routes = compiled.routes; }
     workspace.validate().map_err(|error| error.message)?;
     workspace.runtime_state.enabled_publishers.insert(publisher_id);
     state.repository.save(&workspace).map_err(safe_error)?;

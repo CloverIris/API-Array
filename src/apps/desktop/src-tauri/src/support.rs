@@ -88,7 +88,7 @@ fn empty_workspace(name: &str) -> WorkspacePackage {
         },
         runtime_state: WorkspaceRuntimeState::default(),
         graph: WorkflowGraph {
-            schema_version: SCHEMA_VERSION,
+            schema_version: GRAPH_SCHEMA_VERSION,
             id: "main".to_owned(),
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -187,21 +187,29 @@ fn gateway_entries(workspace: &WorkspacePackage, repository: &WorkspaceRepositor
 
 fn new_canvas_graph(id: &str) -> WorkflowGraph {
     WorkflowGraph {
-        schema_version: SCHEMA_VERSION,
+        schema_version: GRAPH_SCHEMA_VERSION,
         id: id.to_owned(),
         nodes: vec![Node {
+            id: "composer".to_owned(),
+            name: "Composer".to_owned(),
+            kind: NodeKind::Composer,
+            enabled: true,
+            inputs: vec![Port { id: "candidate_in".to_owned(), data_type: PortType::Candidate }, Port { id: "health_in".to_owned(), data_type: PortType::HealthSignal }],
+            outputs: vec![Port { id: "service_plan_out".to_owned(), data_type: PortType::ServicePlan }],
+            config: serde_json::json!({"strategy":"priority_failover","timeout_ms":30000,"max_retries":2,"allow_capability_degradation":false}),
+        }, Node {
             id: "total-output".to_owned(),
             name: "Local total output".to_owned(),
             kind: NodeKind::Publisher,
             enabled: true,
             inputs: vec![Port {
-                id: "request".to_owned(),
-                data_type: PortType::Request,
+                id: "service_plan_in".to_owned(),
+                data_type: PortType::ServicePlan,
             }],
             outputs: Vec::new(),
             config: serde_json::json!({"publisher_id": null, "status": "not_published"}),
         }],
-        edges: Vec::new(),
+        edges: vec![Edge { id: "composer-to-output".to_owned(), from: Endpoint { node: "composer".to_owned(), port: "service_plan_out".to_owned() }, to: Endpoint { node: "total-output".to_owned(), port: "service_plan_in".to_owned() } }],
     }
 }
 

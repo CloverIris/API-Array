@@ -1,5 +1,15 @@
 # API ARRAY 开发约定
 
+## V0.5 Canonical 编组图强制约束
+
+开始任何 Canvas、Graph、Publisher 或 Runtime 路由工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V0.5_Canonical编组图与协议综合器.md`。
+
+- Graph 是服务计划编译器，不是 HTTP Request/Response 数据流引擎。
+- 运行端口只允许 Candidate、ServicePlan、HealthSignal。
+- Provider 协议转换由 Rust Adapter 层自动完成；Composer 是多 Provider 唯一汇聚点。
+- 每个 Canvas 恰好一个 Composer 和一个 Publisher；Group 不参与运行边。
+- Workspace V6 与 Graph V2 不兼容旧数据，不得新增 V5 或旧端口迁移逻辑。
+
 > **V0.2 钱包与项目画布约束**：开始桌面、Workspace 或工作流相关工作前，必须阅读
 > `docs/API_ARRAY_产品设计文档_V0.2_钱包与项目画布变更.md`。API 钱包是工作区级资产；
 > 每个新 Canvas 只有一个总输出器；未确认的预放置绝不持久化；Secret 与真实/推测价格

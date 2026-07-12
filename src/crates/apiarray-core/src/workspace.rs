@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Provider manifests and runtime graphs deliberately remain on Core schema V1;
 /// changing the desktop workspace layout must not invalidate a provider YAML.
 /// POC reset schema. Versions 1–3 intentionally have no migration path.
-pub const WORKSPACE_SCHEMA_VERSION: u32 = 5;
+pub const WORKSPACE_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspacePackage {
@@ -329,8 +329,12 @@ impl WorkspacePackage {
                     append_issues(&mut issues, &format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), error);
                 }
                 let publisher_nodes = canvas.graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Publisher).count();
+                let composer_nodes = canvas.graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Composer).count();
                 if !canvas.legacy_multi_output && publisher_nodes != 1 {
                     issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), "CANVAS_OUTPUT_REQUIRED", "New canvases must contain exactly one total Publisher output"));
+                }
+                if composer_nodes != 1 {
+                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), "CANVAS_COMPOSER_REQUIRED", "Canvas 必须且只能包含一个 Composer"));
                 }
                 if let Some(publisher_id) = &canvas.publisher_id && !self.runtime.publishers.contains_key(publisher_id) {
                     issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.publisher_id"), "PUBLISHER_NOT_FOUND", "Canvas references an unknown Publisher"));
@@ -604,14 +608,14 @@ mod tests {
             id: "workspace".to_owned(),
             name: "Workspace".to_owned(),
             runtime: RuntimeConfig {
-                schema_version: 1,
+                schema_version: crate::SCHEMA_VERSION,
                 id: "workspace".to_owned(),
                 providers: BTreeMap::new(),
                 publishers: BTreeMap::new(),
             },
             runtime_state: WorkspaceRuntimeState::default(),
             graph: WorkflowGraph {
-                schema_version: 1,
+                schema_version: crate::graph::GRAPH_SCHEMA_VERSION,
                 id: "graph".to_owned(),
                 nodes: vec![Node {
                     id: "group".to_owned(),

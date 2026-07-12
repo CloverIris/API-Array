@@ -173,6 +173,7 @@ pub fn run() {
             canvas_graph,
             canvas_snapshot,
             save_canvas_graph,
+            compile_canvas_graph,
             canvas_node_impact,
             commit_wallet_placement,
             run_canvas,

@@ -154,7 +154,7 @@ mod tests {
             },
             runtime_state: WorkspaceRuntimeState::default(),
             graph: WorkflowGraph {
-                schema_version: 1,
+                schema_version: apiarray_core::graph::GRAPH_SCHEMA_VERSION,
                 id: "graph".to_owned(),
                 nodes: Vec::new(),
                 edges: Vec::new(),

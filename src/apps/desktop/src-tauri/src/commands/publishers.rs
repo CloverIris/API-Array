@@ -13,11 +13,7 @@ async fn create_canvas_publisher(
     if canvas.publisher_id.is_some() {
         return Err("Canvas already has a Publisher".to_owned());
     }
-    let provider = workspace
-        .runtime
-        .providers
-        .get(&input.provider_instance)
-        .ok_or_else(|| "Provider 实例不存在。".to_owned())?;
+    let compiled = compile_graph(&canvas.graph, &workspace.wallet, &workspace.runtime).map_err(|error| error.message)?;
     if input.token.trim().is_empty() {
         return Err("Publisher Token 不能为空。".to_owned());
     }
@@ -28,28 +24,6 @@ async fn create_canvas_publisher(
     let token_ref = SecretRef::parse(format!("secret://publisher/{publisher_id}"))
         .map_err(|error| error.message)?;
     let base_path = input.base_path.unwrap_or_else(|| "/v1".to_owned());
-    let route = ModelRoute {
-        public_model: input.public_model.clone(),
-        policy: RoutePolicy {
-            schema_version: SCHEMA_VERSION,
-            id: format!("{publisher_id}-default-policy"),
-            timeout_ms: input.timeout_ms.unwrap_or(30_000),
-            max_retries: input.max_retries.unwrap_or(2),
-            failover_on: HashSet::from([
-                StandardError::ProviderTimeout,
-                StandardError::NetworkUnreachable,
-                StandardError::RateLimited,
-            ]),
-        },
-        upstreams: vec![UpstreamRoute {
-            id: format!("{publisher_id}-primary"),
-            provider_instance: provider.id.clone(),
-            upstream_model: input.upstream_model,
-            priority: 0,
-            enabled: true,
-            conditions: Vec::new(),
-        }],
-    };
     workspace.runtime.publishers.insert(
         publisher_id.clone(),
         RuntimePublisher {
@@ -63,7 +37,7 @@ async fn create_canvas_publisher(
                 require_token: true,
                 token_ref: Some(token_ref.clone()),
             },
-            routes: vec![route],
+            routes: compiled.routes,
         },
     );
     let canvas = workspace

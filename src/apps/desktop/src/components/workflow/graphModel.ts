@@ -1,107 +1,22 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 import type { WorkflowGraph, WorkspaceUiState } from "../../lib/desktop";
 
-export type PortType = "request" | "response" | "capability" | "health" | "control" | "error" | string;
+export type PortType = "candidate" | "service_plan" | "health_signal";
 export type WorkflowNode = WorkflowGraph["nodes"][number];
-
-export type ApiArrayNodeData = {
-  model: WorkflowNode;
-  onToggle?: (id: string) => void;
-};
-
+export type ApiArrayNodeData = { model: WorkflowNode; onToggle?: (id: string) => void };
 export type CanvasNode = Node<ApiArrayNodeData, "apiArray">;
 export type CanvasEdge = Edge<{ dataType: string }, "workflow">;
 
 export function graphToCanvas(graph: WorkflowGraph, uiState?: WorkspaceUiState): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
   const saved = uiState?.workflows[graph.id]?.nodePositions ?? {};
   const fallback = layeredPositions(graph);
-  const nodes = graph.nodes.map((model) => {
-    const config = model.config as { parent_id?: string };
-    return {
-      id: model.id,
-      type: "apiArray" as const,
-      position: saved[model.id] ?? fallback[model.id] ?? { x: 0, y: 0 },
-      parentId: config.parent_id,
-      extent: config.parent_id ? ("parent" as const) : undefined,
-      data: { model },
-      ariaLabel: `${model.kind} 节点：${model.name}`,
-      domAttributes: { "aria-roledescription": "工作流节点" },
-    };
-  });
+  const nodes = graph.nodes.map((model) => { const config = model.config as { parent_id?: string }; return { id: model.id, type: "apiArray" as const, position: saved[model.id] ?? fallback[model.id] ?? { x: 0, y: 0 }, parentId: config.parent_id, extent: config.parent_id ? "parent" as const : undefined, data: { model }, ariaLabel: `${model.kind} 节点：${model.name}`, domAttributes: { "aria-roledescription": "服务编组节点" } }; });
   const nodeMap = new Map(graph.nodes.map((node) => [node.id, node]));
-  const edges = graph.edges.map((edge) => {
-    const source = nodeMap.get(edge.from.node);
-    const type = source?.outputs.find((port) => port.id === edge.from.port)?.data_type ?? "control";
-    return { id: edge.id, type: "workflow" as const, source: edge.from.node, sourceHandle: edge.from.port, target: edge.to.node, targetHandle: edge.to.port, data: { dataType: type }, ariaLabel: `${edge.from.node} 到 ${edge.to.node} 的 ${type} 连接` };
-  });
+  const edges = graph.edges.map((edge) => { const source = nodeMap.get(edge.from.node); const type = source?.outputs.find((port) => port.id === edge.from.port)?.data_type ?? "service_plan"; return { id: edge.id, type: "workflow" as const, source: edge.from.node, sourceHandle: edge.from.port, target: edge.to.node, targetHandle: edge.to.port, data: { dataType: type }, ariaLabel: `${edge.from.node} 到 ${edge.to.node} 的 ${type} 连接` }; });
   return { nodes, edges };
 }
-
-export function canvasToGraph(base: WorkflowGraph, nodes: CanvasNode[], edges: CanvasEdge[]): WorkflowGraph {
-  return {
-    ...base,
-    nodes: nodes.map((node) => node.data.model),
-    edges: edges.map((edge) => ({ id: edge.id, from: { node: edge.source, port: edge.sourceHandle ?? "" }, to: { node: edge.target, port: edge.targetHandle ?? "" } })),
-  };
-}
-
-export function positionsFromNodes(nodes: CanvasNode[]): Record<string, XYPosition> {
-  return Object.fromEntries(nodes.map((node) => [node.id, node.position]));
-}
-
-export function layeredPositions(graph: WorkflowGraph): Record<string, XYPosition> {
-  const indegree = new Map(graph.nodes.map((node) => [node.id, 0]));
-  const outgoing = new Map(graph.nodes.map((node) => [node.id, [] as string[]]));
-  for (const edge of graph.edges) {
-    indegree.set(edge.to.node, (indegree.get(edge.to.node) ?? 0) + 1);
-    outgoing.get(edge.from.node)?.push(edge.to.node);
-  }
-  const queue = graph.nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id);
-  const level = new Map(queue.map((id) => [id, 0]));
-  while (queue.length) {
-    const id = queue.shift()!;
-    for (const next of outgoing.get(id) ?? []) {
-      level.set(next, Math.max(level.get(next) ?? 0, (level.get(id) ?? 0) + 1));
-      indegree.set(next, (indegree.get(next) ?? 1) - 1);
-      if (indegree.get(next) === 0) queue.push(next);
-    }
-  }
-  const rows = new Map<number, number>();
-  return Object.fromEntries(graph.nodes.map((node, index) => {
-    const column = level.get(node.id) ?? index;
-    const row = rows.get(column) ?? 0;
-    rows.set(column, row + 1);
-    return [node.id, { x: 60 + column * 300, y: 70 + row * 190 }];
-  }));
-}
-
-export function connectionCreatesCycle(edges: CanvasEdge[], source: string, target: string) {
-  if (source === target) return true;
-  const outgoing = new Map<string, string[]>();
-  for (const edge of edges) outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
-  outgoing.set(source, [...(outgoing.get(source) ?? []), target]);
-  const stack = [target];
-  const visited = new Set<string>();
-  while (stack.length) {
-    const current = stack.pop()!;
-    if (current === source) return true;
-    if (visited.has(current)) continue;
-    visited.add(current);
-    stack.push(...(outgoing.get(current) ?? []));
-  }
-  return false;
-}
-
-export function newWorkflowNode(kind: WorkflowNode["kind"], index: number): WorkflowNode {
-  const id = `${kind}-${Date.now().toString(36)}-${index}`;
-  const ports: Record<WorkflowNode["kind"], { inputs: WorkflowNode["inputs"]; outputs: WorkflowNode["outputs"] }> = {
-    adapter: { inputs: [{ id: "request_in", data_type: "request" }], outputs: [{ id: "response_out", data_type: "response" }, { id: "error_out", data_type: "error" }] },
-    probe: { inputs: [{ id: "control_in", data_type: "control" }], outputs: [{ id: "health_out", data_type: "health" }, { id: "capability_out", data_type: "capability" }] },
-    transform: { inputs: [{ id: "request_in", data_type: "request" }], outputs: [{ id: "request_out", data_type: "request" }] },
-    router: { inputs: [{ id: "request_in", data_type: "request" }, { id: "health_in", data_type: "health" }], outputs: [{ id: "request_out", data_type: "request" }, { id: "error_out", data_type: "error" }] },
-    guard: { inputs: [{ id: "request_in", data_type: "request" }], outputs: [{ id: "request_out", data_type: "request" }, { id: "error_out", data_type: "error" }] },
-    publisher: { inputs: [{ id: "response_in", data_type: "response" }, { id: "error_in", data_type: "error" }], outputs: [] },
-    group: { inputs: [{ id: "control_in", data_type: "control" }], outputs: [{ id: "control_out", data_type: "control" }] },
-  };
-  return { id, name: kind[0].toUpperCase() + kind.slice(1), kind, enabled: true, ...ports[kind], config: {} };
-}
+export function canvasToGraph(base: WorkflowGraph, nodes: CanvasNode[], edges: CanvasEdge[]): WorkflowGraph { return { ...base, nodes: nodes.map((node) => node.data.model), edges: edges.map((edge) => ({ id: edge.id, from: { node: edge.source, port: edge.sourceHandle ?? "" }, to: { node: edge.target, port: edge.targetHandle ?? "" } })) }; }
+export function positionsFromNodes(nodes: CanvasNode[]): Record<string, XYPosition> { return Object.fromEntries(nodes.map((node) => [node.id, node.position])); }
+export function layeredPositions(graph: WorkflowGraph): Record<string, XYPosition> { const indegree = new Map(graph.nodes.map((node) => [node.id, 0])); const outgoing = new Map(graph.nodes.map((node) => [node.id, [] as string[]])); for (const edge of graph.edges) { indegree.set(edge.to.node, (indegree.get(edge.to.node) ?? 0) + 1); outgoing.get(edge.from.node)?.push(edge.to.node); } const queue = graph.nodes.filter((node) => indegree.get(node.id) === 0).map((node) => node.id); const level = new Map(queue.map((id) => [id, 0])); while (queue.length) { const id = queue.shift()!; for (const next of outgoing.get(id) ?? []) { level.set(next, Math.max(level.get(next) ?? 0, (level.get(id) ?? 0) + 1)); indegree.set(next, (indegree.get(next) ?? 1) - 1); if (indegree.get(next) === 0) queue.push(next); } } const rows = new Map<number, number>(); return Object.fromEntries(graph.nodes.map((node, index) => { const column = level.get(node.id) ?? index; const row = rows.get(column) ?? 0; rows.set(column, row + 1); return [node.id, { x: 60 + column * 300, y: 70 + row * 190 }]; })); }
+export function connectionCreatesCycle(edges: CanvasEdge[], source: string, target: string) { if (source === target) return true; const outgoing = new Map<string, string[]>(); for (const edge of edges) outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]); outgoing.set(source, [...(outgoing.get(source) ?? []), target]); const stack = [target]; const visited = new Set<string>(); while (stack.length) { const current = stack.pop()!; if (current === source) return true; if (visited.has(current)) continue; visited.add(current); stack.push(...(outgoing.get(current) ?? [])); } return false; }
+export function newWorkflowNode(kind: WorkflowNode["kind"], index: number): WorkflowNode { const id = `${kind}-${Date.now().toString(36)}-${index}`; const ports: Record<WorkflowNode["kind"], { inputs: WorkflowNode["inputs"]; outputs: WorkflowNode["outputs"] }> = { provider: { inputs: [], outputs: [{ id: "candidate_out", data_type: "candidate" }] }, composer: { inputs: [{ id: "candidate_in", data_type: "candidate" }, { id: "health_in", data_type: "health_signal" }], outputs: [{ id: "service_plan_out", data_type: "service_plan" }] }, middleware: { inputs: [{ id: "service_plan_in", data_type: "service_plan" }], outputs: [{ id: "service_plan_out", data_type: "service_plan" }] }, probe: { inputs: [], outputs: [{ id: "health_out", data_type: "health_signal" }] }, publisher: { inputs: [{ id: "service_plan_in", data_type: "service_plan" }], outputs: [] }, group: { inputs: [], outputs: [] } }; return { id, name: kind[0].toUpperCase() + kind.slice(1), kind, enabled: true, ...ports[kind], config: {} }; }

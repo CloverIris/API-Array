@@ -602,22 +602,35 @@ async fn save_canvas_graph(
     .await
 }
 
+#[tauri::command]
+fn compile_canvas_graph(input: CanvasActionInput, state: State<'_, DesktopState>) -> Result<CanvasCompilationReport, String> {
+    let workspace = load_workspace(&state.repository)?;
+    let canvas = workspace.projects.projects.get(&input.project_id).and_then(|project| project.canvases.get(&input.canvas_id)).ok_or_else(|| "Canvas not found".to_owned())?;
+    compile_graph(&canvas.graph, &workspace.wallet, &workspace.runtime).map(|compiled| compiled.report).map_err(|error| error.message)
+}
+
 fn validate_canvas_domain_graph(workspace: &WorkspacePackage, graph: &WorkflowGraph, require_secrets: bool) -> Result<(), String> {
     graph.validate().map_err(|error| error.message)?;
     let publishers = graph.nodes.iter().filter(|node| node.kind == NodeKind::Publisher).collect::<Vec<_>>();
+    let composers = graph.nodes.iter().filter(|node| node.kind == NodeKind::Composer).collect::<Vec<_>>();
     if publishers.len() != 1 { return Err("每个 Canvas 必须且只能包含一个总输出器。".to_owned()); }
+    if composers.len() != 1 { return Err("每个 Canvas 必须且只能包含一个 Composer。".to_owned()); }
     if !publishers[0].enabled { return Err("Canvas 总输出器不能停用。".to_owned()); }
     let mut referenced_assets = std::collections::BTreeSet::new();
-    for node in graph.nodes.iter().filter(|node| node.kind == NodeKind::Adapter) {
+    for node in graph.nodes.iter().filter(|node| node.kind == NodeKind::Provider) {
         let asset_id = node.config.get("asset_id").and_then(Value::as_str).ok_or_else(|| format!("Adapter {} 未绑定 API 钱包资产。", node.name))?;
         let asset = workspace.wallet.assets.get(asset_id).ok_or_else(|| format!("Adapter {} 引用了不存在的钱包资产。", node.name))?;
         if !referenced_assets.insert(asset_id) { return Err(format!("钱包资产 {} 在当前 Canvas 中被重复添加。", asset.name)); }
         let provider = workspace.runtime.providers.get(&asset.provider_instance_id).ok_or_else(|| format!("钱包资产 {} 缺少 Provider 实例。", asset.name))?;
         if require_secrets && (!asset.enabled || !provider.enabled || provider.secret_refs.is_empty()) { return Err(format!("钱包资产 {} 已停用或缺少 Secret，不能运行。", asset.name)); }
     }
-    if graph.nodes.iter().any(|node| node.kind == NodeKind::Router) && referenced_assets.is_empty() { return Err("Router 至少需要一个钱包资产上游。".to_owned()); }
+    if referenced_assets.is_empty() { return Err("Composer 至少需要一个钱包资产候选。".to_owned()); }
+    let composer_id = &composers[0].id;
+    for provider in graph.nodes.iter().filter(|node| node.kind == NodeKind::Provider && node.enabled) {
+        if !graph.edges.iter().any(|edge| edge.from.node == provider.id && edge.to.node == *composer_id) { return Err(format!("Provider {} 尚未连接 Composer。", provider.name)); }
+    }
     let publisher_id = &publishers[0].id;
-    let reachable = graph.edges.iter().any(|edge| edge.to.node == *publisher_id);
+    let reachable = graph.edges.iter().any(|edge| edge.to.node == *publisher_id && (edge.from.node == *composer_id || graph.nodes.iter().any(|node| node.id == edge.from.node && node.kind == NodeKind::Middleware)));
     if !referenced_assets.is_empty() && !reachable { return Err("启用的编组路径尚未连接到 Canvas 总输出器。".to_owned()); }
     Ok(())
 }
@@ -663,23 +676,23 @@ async fn commit_wallet_placement(
         .ok_or_else(|| "Canvas not found".to_owned())?;
     let base = format!("{}-group", asset.id);
     let node_id = unique_node_id(&canvas.graph, &base);
-    canvas.graph.nodes.push(Node { id: node_id.clone(), name: asset.name, kind: NodeKind::Adapter, enabled: true, inputs: vec![], outputs: vec![Port { id: "request".to_owned(), data_type: PortType::Request }], config: serde_json::json!({"asset_id": asset.id, "provider_instance_id": asset.provider_instance_id, "upstream_model": "default", "public_model": "default"}) });
-    let publisher = canvas
+    canvas.graph.nodes.push(Node { id: node_id.clone(), name: asset.name, kind: NodeKind::Provider, enabled: true, inputs: vec![], outputs: vec![Port { id: "candidate_out".to_owned(), data_type: PortType::Candidate }], config: serde_json::json!({"asset_id": asset.id, "provider_instance_id": asset.provider_instance_id, "upstream_model": "default", "public_model": "default", "priority": 0}) });
+    let composer = canvas
         .graph
         .nodes
         .iter()
-        .find(|node| node.kind == NodeKind::Publisher)
+        .find(|node| node.kind == NodeKind::Composer)
         .map(|node| node.id.clone())
-        .ok_or_else(|| "Canvas total output is missing".to_owned())?;
+        .ok_or_else(|| "Canvas Composer is missing".to_owned())?;
     canvas.graph.edges.push(Edge {
         id: unique_edge_id(&canvas.graph, &format!("{node_id}-to-output")),
         from: Endpoint {
             node: node_id,
-            port: "request".to_owned(),
+            port: "candidate_out".to_owned(),
         },
         to: Endpoint {
-            node: publisher,
-            port: "request".to_owned(),
+            node: composer,
+            port: "candidate_in".to_owned(),
         },
     });
     canvas.draft_revision = canvas.draft_revision.saturating_add(1);

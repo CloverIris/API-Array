@@ -10,7 +10,7 @@ use apiarray_core::{
     SCHEMA_VERSION,
     catalog::builtin_provider_manifests,
     graph::{
-        Edge, Endpoint, GraphSummary, Node, NodeImpact, NodeKind, Port, PortType, WorkflowGraph,
+        compile_canvas_graph as compile_graph, CanvasCompilationReport, Edge, Endpoint, GraphSummary, Node, NodeImpact, NodeKind, Port, PortType, WorkflowGraph, GRAPH_SCHEMA_VERSION,
     },
     publisher::PublisherSummary,
     routing::{RoutePolicy, StandardError},
@@ -75,7 +75,7 @@ include!("host.rs");
 mod tests {
     use super::{
         ShellUiState, WorkspaceUiState, empty_workspace, model_count_from_payload,
-        new_canvas_graph, read_ui_state, sanitize_ui_state, workspace_name,
+        new_canvas_graph, read_ui_state, sanitize_ui_state, workspace_name, NodeKind,
     };
     use apiarray_runtime::persistence::WorkspaceRepository;
     use std::fs;
@@ -101,7 +101,9 @@ mod tests {
         let graph = new_canvas_graph("canvas-a");
         let summary = graph.validate().expect("new canvas graph is valid");
         assert_eq!(summary.publisher_count, 1);
-        assert_eq!(summary.node_count, 1);
+        assert_eq!(summary.node_count, 2);
+        assert_eq!(summary.edge_count, 1);
+        assert!(graph.nodes.iter().any(|node| node.kind == NodeKind::Composer));
     }
 
     #[test]

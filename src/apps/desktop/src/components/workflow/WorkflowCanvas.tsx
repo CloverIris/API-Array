@@ -144,8 +144,11 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
     const target = nodes.find((node) => node.id === connection.target)?.data.model;
     const output = source?.outputs.find((port) => port.id === connection.sourceHandle);
     const input = target?.inputs.find((port) => port.id === connection.targetHandle);
+    if (!source || !target) return "连接引用了不存在的节点。";
     if (!output || !input) return "连接引用了不存在的端口。";
     if (output.data_type !== input.data_type) return `端口类型不兼容：${output.data_type} 不能连接到 ${input.data_type}。`;
+    const allowed = (source.kind === "provider" && target?.kind === "composer" && output.data_type === "candidate") || (source.kind === "probe" && target?.kind === "composer" && output.data_type === "health_signal") || ((source.kind === "composer" || source.kind === "middleware") && (target?.kind === "middleware" || target?.kind === "publisher") && output.data_type === "service_plan");
+    if (!allowed) return `${source.kind} 不能通过 ${output.data_type} 连接到 ${target?.kind ?? "未知节点"}。`;
     return null;
   }, [edges, nodes]);
 
@@ -154,7 +157,7 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
     if (error) { setLocalError(error); return; }
     snapshotHistory();
     const source = nodes.find((node) => node.id === connection.source)?.data.model;
-    const dataType = source?.outputs.find((port) => port.id === connection.sourceHandle)?.data_type ?? "control";
+    const dataType = source?.outputs.find((port) => port.id === connection.sourceHandle)?.data_type ?? "service_plan";
     setEdges((current) => addEdge({ ...connection, id: `edge-${Date.now().toString(36)}`, type: "workflow", data: { dataType }, markerEnd: { type: MarkerType.ArrowClosed } }, current));
     setLocalError(null);
     markDirty();
@@ -173,11 +176,13 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
   const addAsset = (asset: WalletCard) => {
     if (asset.source !== "asset" || !asset.providerInstanceId) { setLocalError("请先在 API 钱包中完成资产配置。"); return; }
     snapshotHistory();
-    const model = newWorkflowNode("adapter", nodes.length);
+    const model = newWorkflowNode("provider", nodes.length);
     model.name = asset.name;
     model.config = { asset_id: asset.id, provider_instance_id: asset.providerInstanceId, upstream_model: "default", public_model: "default", secret_ready: asset.configured };
     const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
-    setNodes((current) => [...current, { id: model.id, type: "apiArray", position, data: { model }, ariaLabel: `钱包资产节点：${asset.name}` }]);
+    const composer = nodes.find((node) => node.data.model.kind === "composer");
+    setNodes((current) => [...current, { id: model.id, type: "apiArray", position, data: { model }, ariaLabel: `钱包 Provider：${asset.name}` }]);
+    if (composer) setEdges((current) => [...current, { id: `edge-${model.id}-composer`, type: "workflow", source: model.id, sourceHandle: "candidate_out", target: composer.id, targetHandle: "candidate_in", data: { dataType: "candidate" }, markerEnd: { type: MarkerType.ArrowClosed } }]);
     setLocalError(asset.configured ? null : `${asset.name} 尚未配置 Key；可以保存草稿，但运行会被阻止。`);
     markDirty();
   };
@@ -188,14 +193,21 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
     if (usable.length < required) { setLocalError(`该模板至少需要 ${required} 个钱包资产。`); return; }
     snapshotHistory();
     const publisher = nodes.find((node) => node.data.model.kind === "publisher")?.data.model ?? newWorkflowNode("publisher", 0);
-    const adapters = usable.slice(0, required).map((asset, index) => { const node = newWorkflowNode("adapter", index + 1); node.name = asset.name; node.config = { asset_id: asset.id, provider_instance_id: asset.providerInstanceId, upstream_model: "default", public_model: "default", priority: index, secret_ready: asset.configured }; return node; });
-    const router = newWorkflowNode("router", required + 1); router.config = { strategy: "priority_failover", timeout_ms: 30000, max_retries: 2, failover_on: ["timeout", "rate_limited", "network"] };
-    const extra = template === "guarded" ? [newWorkflowNode("probe", required + 2), newWorkflowNode("guard", required + 3)] : [];
+    const providers = usable.slice(0, required).map((asset, index) => { const node = newWorkflowNode("provider", index + 1); node.name = asset.name; node.config = { asset_id: asset.id, provider_instance_id: asset.providerInstanceId, upstream_model: "default", public_model: template === "single" ? "default" : `model-${index + 1}`, priority: index, secret_ready: asset.configured }; return node; });
+    const composer = newWorkflowNode("composer", required + 1); composer.config = { strategy: "priority_failover", timeout_ms: 30000, max_retries: 2, allow_capability_degradation: false };
+    const extra = template === "guarded" ? [newWorkflowNode("probe", required + 2), newWorkflowNode("middleware", required + 3)] : [];
     if (extra[0]) extra[0].config = { safe_only: true, interval_seconds: 300, failure_threshold: 3 };
     if (extra[1]) extra[1].config = { budget_warning_percent: 80, rate_limit_per_minute: 60, allowed_models: ["default"] };
-    const models = template === "single" ? [publisher, ...adapters] : [publisher, ...adapters, router, ...extra];
-    setNodes(graphToCanvas({ ...graph!, nodes: models, edges: [] }, uiState).nodes);
-    setEdges([]);
+    const models = [publisher, ...providers, composer, ...extra];
+    const graphEdges = providers.map((provider, index) => ({ id: `provider-${index}-composer`, from: { node: provider.id, port: "candidate_out" }, to: { node: composer.id, port: "candidate_in" } }));
+    const middleware = extra.find((node) => node.kind === "middleware");
+    graphEdges.push({ id: "composer-service", from: { node: composer.id, port: "service_plan_out" }, to: { node: middleware?.id ?? publisher.id, port: middleware ? "service_plan_in" : "service_plan_in" } });
+    if (middleware) graphEdges.push({ id: "middleware-publisher", from: { node: middleware.id, port: "service_plan_out" }, to: { node: publisher.id, port: "service_plan_in" } });
+    const probe = extra.find((node) => node.kind === "probe");
+    if (probe) graphEdges.push({ id: "probe-health", from: { node: probe.id, port: "health_out" }, to: { node: composer.id, port: "health_in" } });
+    const generated = graphToCanvas({ ...graph!, nodes: models, edges: graphEdges }, uiState);
+    setNodes(generated.nodes);
+    setEdges(generated.edges);
     setLocalError("模板已创建。请连接类型化端口并完成配置后保存草稿。");
     markDirty();
   };
@@ -245,8 +257,8 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
     <div className="workflow-canvas" aria-label="API ARRAY 节点编排画布">
       <ReactFlow nodes={displayedNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={connect} isValidConnection={(connection) => !connectionError(connection)} onMoveEnd={moveEnd} onNodeDragStop={nodeDragStop} onSelectionChange={selectionChanged} onBeforeDelete={beforeDelete} defaultViewport={uiState.workflows[graph.id]?.viewport} fitView={!uiState.workflows[graph.id]} nodesFocusable edgesFocusable deleteKeyCode={["Backspace", "Delete"]} multiSelectionKeyCode={["Control", "Meta"]} ariaLabelConfig={ariaLabels} minZoom={0.2} maxZoom={2.5} snapToGrid snapGrid={[16, 16]}>
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
-        {!nodes.length ? <Panel position="top-center" className="canvas-empty"><strong>从 API 钱包开始编组</strong><span>通过“添加节点”选择钱包资产，或应用一套基础编组模板。</span><div><Button color="secondary" variant="soft" size="sm" onClick={() => addNode("router")}>添加路由器</Button></div></Panel> : null}
-        <MiniMap pannable zoomable nodeColor={(node) => (node as CanvasNode).data.model.enabled ? "var(--app-port-request)" : "var(--color-text-tertiary)"} />
+        {!nodes.length ? <Panel position="top-center" className="canvas-empty"><strong>从 API 钱包开始编组</strong><span>新 Canvas 会自动生成 Composer 与 Publisher；钱包资产会作为候选连接到 Composer。</span></Panel> : null}
+        <MiniMap pannable zoomable nodeColor={(node) => (node as CanvasNode).data.model.enabled ? "var(--app-port-candidate)" : "var(--color-text-tertiary)"} />
         <Controls showInteractive={false} />
       </ReactFlow>
     </div>
