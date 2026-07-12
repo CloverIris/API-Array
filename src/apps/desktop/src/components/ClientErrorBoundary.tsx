@@ -5,6 +5,19 @@ import { copyText } from "./shared";
 
 type Props = { children: ReactNode };
 type State = { error: Error | null; componentStack: string };
+export const REACT_310_RECOVERY_KEY = "apiarray.react-310-recovery";
+export const REACT_310_MAX_RECOVERIES = 3;
+
+export function isRecoverableReactCacheError(message: string) {
+  return message.includes("Minified React error #310") || message.includes("Rendered more hooks than during the previous render");
+}
+
+export function nextReactRecoveryAttempt(message: string, stored: string | null) {
+  if (!isRecoverableReactCacheError(message)) return null;
+  const parsed = Number.parseInt(stored ?? "0", 10);
+  const current = Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  return current < REACT_310_MAX_RECOVERIES ? current + 1 : null;
+}
 
 /**
  * Production React errors are minified. Keep the component stack locally so a
@@ -19,6 +32,12 @@ export class ClientErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
+    const recoveryAttempt = nextReactRecoveryAttempt(error.message, sessionStorage.getItem(REACT_310_RECOVERY_KEY));
+    if (recoveryAttempt !== null) {
+      sessionStorage.setItem(REACT_310_RECOVERY_KEY, String(recoveryAttempt));
+      window.location.reload();
+      return;
+    }
     this.setState({ componentStack: info.componentStack ?? "" });
     console.error("API ARRAY client render boundary", error, info.componentStack);
   }

@@ -420,7 +420,7 @@ export const createDefaultWorkspace = (name: string) => invoke<DesktopSnapshot>(
 export const openWorkspaceAt = (root: string) => invoke<DesktopSnapshot>("open_workspace_at", { input: { root } });
 export const relocateWorkspace = (root: string) => invoke<DesktopSnapshot>("relocate_workspace", { input: { root } });
 export const testPublisherConnection = (publisherId: string) => invoke<PublisherConnectionTest>("test_publisher_connection", { publisherId });
-export const setWindowMaterialTheme = (dark: boolean) => invoke<void>("set_window_material_theme", { dark });
+export const setWindowMaterialTheme = (dark: boolean | null) => invoke<void>("set_window_material_theme", { dark });
 export const getWorkspaceUiState = () => invoke<WorkspaceUiState>("workspace_ui_state");
 export const saveWorkspaceUiState = (uiState: WorkspaceUiState) =>
   invoke<WorkspaceUiState>("save_workspace_ui_state", { uiState });

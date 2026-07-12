@@ -1,4 +1,4 @@
-fn workspace_repository(app: &AppHandle) -> Result<(WorkspaceRepository, apiarray_runtime::persistence::LauncherRepository), String> {
+﻿fn workspace_repository(app: &AppHandle) -> Result<(WorkspaceRepository, apiarray_runtime::persistence::LauncherRepository), String> {
     let data_dir: PathBuf = app
         .path()
         .app_data_dir()
@@ -9,29 +9,74 @@ fn workspace_repository(app: &AppHandle) -> Result<(WorkspaceRepository, apiarra
     Ok((WorkspaceRepository::new(root), launcher))
 }
 
-#[allow(dead_code)]
-fn install_tray(app: &AppHandle) -> tauri::Result<()> {
-    let show = MenuItem::with_id(app, "show", "显示 API ARRAY", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &quit])?;
-
-    TrayIconBuilder::with_id("main")
-        .menu(&menu)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => show_main_window(app),
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .build(app)?;
-    Ok(())
-}
-
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+}
+
+fn normalize_startup_window(window: &WebviewWindow) {
+    let _ = window.set_fullscreen(false);
+    let _ = window.unmaximize();
+    let _ = window.set_size(Size::Logical(LogicalSize::new(1440.0, 920.0)));
+    let _ = window.center();
+}
+
+fn quit_application(app: &AppHandle) {
+    let state = app.state::<DesktopState>();
+    if state.is_quitting.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(gateway) = app.state::<DesktopState>().gateway.lock().await.take() {
+            gateway.stop().await;
+        }
+        if let Some(plane) = app.state::<DesktopState>().control_plane.lock().await.clone() {
+            plane.shutdown().await;
+        }
+        *app.state::<DesktopState>().control_plane.lock().await = None;
+        app.exit(0);
+    });
+}
+
+fn install_ctrl_c_handler(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            quit_application(&app);
+        }
+    });
+}
+
+fn webview_assets_changed(previous: Option<&str>, current: &str) -> bool {
+    previous.map(str::trim) != Some(current)
+}
+
+#[cfg(not(debug_assertions))]
+fn refresh_webview_assets_if_needed(app: &AppHandle, window: &WebviewWindow) {
+    let current = env!("APIARRAY_UI_BUILD_ID");
+    let Ok(cache_dir) = app.path().app_cache_dir() else { return };
+    let marker = cache_dir.join("webview-ui-build-id");
+    let previous = std::fs::read_to_string(&marker).ok();
+    if !webview_assets_changed(previous.as_deref(), current) { return; }
+
+    if let Err(error) = window.clear_all_browsing_data() {
+        eprintln!("API ARRAY webview cache refresh failed: {error}");
+        return;
+    }
+    if std::fs::create_dir_all(&cache_dir).and_then(|_| std::fs::write(&marker, current)).is_err() {
+        eprintln!("API ARRAY webview build marker could not be saved");
+        return;
+    }
+    let _ = window.eval("window.setTimeout(() => window.location.reload(), 0)");
+}
+
+#[cfg(debug_assertions)]
+fn refresh_webview_assets_if_needed(_app: &AppHandle, _window: &WebviewWindow) {
+    debug_assert!(!webview_assets_changed(Some("development"), "development"));
 }
 
 fn install_application_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -60,7 +105,7 @@ fn install_application_tray(app: &AppHandle) -> tauri::Result<()> {
             "navigate_direct" => navigate_from_tray(app, "direct"),
             "navigate_compositions" => navigate_from_tray(app, "compositions"),
             "autostart" => { let manager = app.autolaunch(); if manager.is_enabled().unwrap_or(false) { let _ = manager.disable(); } else { let _ = manager.enable(); } }
-            "quit" => app.exit(0),
+            "quit" => quit_application(app),
             _ => {}
         });
     if let Some(icon) = app.default_window_icon() { builder = builder.icon(icon.clone()); }
@@ -95,7 +140,11 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION)
+                .build(),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
@@ -131,11 +180,15 @@ pub fn run() {
                 gateway: Mutex::new(None),
                 gateway_error: Mutex::new(None),
                 startup_error: Mutex::new(startup_error),
+                is_quitting: AtomicBool::new(false),
             });
             install_application_tray(&app.handle())?;
+            install_ctrl_c_handler(&app.handle());
 
             if let Some(window) = app.get_webview_window("main") {
+                normalize_startup_window(&window);
                 apply_native_material(&window, None);
+                refresh_webview_assets_if_needed(&app.handle(), &window);
             }
             if has_workspace {
                 let state = app.state::<DesktopState>();
@@ -146,6 +199,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.app_handle().state::<DesktopState>().is_quitting.load(Ordering::SeqCst) {
+                    return;
+                }
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -248,5 +304,5 @@ pub fn run() {
             stop_instances_by_kind
         ])
         .run(tauri::generate_context!())
-        .expect("API ARRAY 桌面程序无法启动");
+        .expect("API ARRAY 妗岄潰绋嬪簭鏃犳硶鍚姩");
 }

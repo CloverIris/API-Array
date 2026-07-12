@@ -151,9 +151,24 @@ fn canvas_endpoint_url(workspace: &WorkspacePackage, project_id: &str, canvas_id
 }
 
 async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
+    if state.is_quitting.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     let workspace = load_workspace(&state.repository)?;
     let entries = gateway_entries(&workspace, &state.repository, &state.secret_store)?;
     let address = gateway_socket_address(&workspace.gateway.listen_address, workspace.gateway.port)?;
+    let entry_prefixes = entries.iter().map(|entry| entry.prefix.clone()).collect::<Vec<_>>();
+
+    {
+        let gateway = state.gateway.lock().await;
+        if let Some(gateway) = gateway.as_ref()
+            && gateway.address() == address
+            && gateway.entry_prefixes() == entry_prefixes.as_slice()
+        {
+            *state.gateway_error.lock().await = None;
+            return Ok(());
+        }
+    }
 
     // Build the route set before touching the current gateway. Binding the same
     // port still requires a short hand-over, so retain the old workspace and

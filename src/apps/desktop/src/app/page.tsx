@@ -2,12 +2,12 @@
 
 import { AppsSDKUIProvider } from "@openai/apps-sdk-ui/components/AppsSDKUIProvider";
 import { CheckCircle } from "@openai/apps-sdk-ui/components/Icon";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ContextInspector } from "../components/ContextInspector";
 import { MainWorkspace } from "../components/MainWorkspace";
 import { Onboarding } from "../components/Onboarding";
 import { AppShell } from "../components/shell/AppShell";
-import { ClientErrorBoundary } from "../components/ClientErrorBoundary";
+import { ClientErrorBoundary, REACT_310_RECOVERY_KEY } from "../components/ClientErrorBoundary";
 import type { SelectedWorkflowItem } from "../components/workflow/WorkflowInspector";
 import { useDesktopWorkspaceController } from "../hooks/useDesktopWorkspaceController";
 import { useTheme } from "../hooks/useTheme";
@@ -18,6 +18,10 @@ function DesktopApp() {
   const controller = useDesktopWorkspaceController();
   const [workflowSelection, setWorkflowSelection] = useState<SelectedWorkflowItem>(null);
   useTheme(controller.uiState.themePreference);
+  useEffect(() => {
+    const timer = window.setTimeout(() => sessionStorage.removeItem(REACT_310_RECOVERY_KEY), 5_000);
+    return () => window.clearTimeout(timer);
+  }, []);
   const updateUi = useCallback((next: typeof controller.uiState) => controller.updateUiState(() => next), [controller.updateUiState]);
   const selectWorkflowItem = useCallback((selection: SelectedWorkflowItem) => { setWorkflowSelection(selection); if (selection) controller.updateUiState((current) => current.shell.rightInspectorOpen ? current : ({ ...current, shell: { ...current.shell, rightInspectorOpen: true } })); }, [controller.updateUiState]);
   if (controller.loading) return <div className="boot-screen"><CheckCircle className="size-5" />正在打开本地工作区…</div>;

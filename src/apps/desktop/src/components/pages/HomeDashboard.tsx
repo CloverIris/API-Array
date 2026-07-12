@@ -33,5 +33,67 @@ export function HomeDashboard({ workspaceName, controlCenter, wallet, projectTre
   const shortcuts = [["API 钱包", `${wallet.length} 个上游资产`, ApiKeys, () => onNavigate("wallet")], ["审计直出", `${instances.filter((item) => item.kind === "direct_endpoint").length} 个本地端点`, Plugin, () => onNavigate("direct")], ["编组模式", `${plans.length} 个编组方案`, Branch, () => onNavigate("compositions")], ["统一网关", `${controlCenter.gateway.entryCount} 个入口`, Grid, () => setView("instances")], ["文档", "接口说明与八种语言", Document, () => onNavigate("templates")]] as const;
   return <section className="mx-auto grid w-full max-w-[1320px] gap-5 pb-12"><div className="overflow-hidden rounded-3xl border border-default bg-surface shadow-sm"><div className="control-center-hero relative overflow-hidden px-6 py-7 md:px-8 md:py-9"><div className="relative z-10"><p className="mb-2 text-xs font-semibold tracking-[.12em] text-info uppercase">API ARRAY CONTROL CENTER</p><h1 className="text-3xl font-semibold tracking-tight">主控台</h1><p className="mt-2 max-w-2xl text-sm leading-6 text-secondary">{workspaceName} 的本地 API、审计入口和编组服务都在这里。</p><div className="mt-5 flex flex-wrap items-center gap-2"><Button color="primary" loading={busy === "all"} disabled={Boolean(busy)} onClick={() => void startAll()}><Play />启动可用实例</Button><Button color="secondary" variant="soft" disabled={Boolean(busy)} onClick={() => void stopAll()}><Pause />停止全部</Button><Badge color={controlCenter.gateway.running ? "success" : "danger"} variant="soft">{controlCenter.gateway.running ? `网关在线 · ${controlCenter.runningCount} 运行中` : "网关不可用"}</Badge></div></div><div className="control-center-orbit orbit-large" /><div className="control-center-orbit orbit-small" /></div><div className="grid grid-cols-2 gap-px bg-surface-secondary md:grid-cols-5">{shortcuts.map(([title, description, Icon, action]) => <button type="button" key={title} className="control-center-shortcut" onClick={action}><div className="shortcut-icon"><Icon className="size-5" /></div><span><strong>{title}</strong><small>{description}</small></span></button>)}</div></div><div className="dashboard-toolbar"><div><strong>运行概览</strong><small>查看状态，或集中管理全部本地实例。</small></div><div className="flex items-center gap-2"><SegmentedControl value={view} onChange={setView} aria-label="主控台视图" size="sm"><SegmentedControl.Option value="overview">概览</SegmentedControl.Option><SegmentedControl.Option value="instances">全部实例</SegmentedControl.Option></SegmentedControl><Tooltip content="刷新主控台"><Button color="secondary" variant="ghost" uniform aria-label="刷新主控台" onClick={onRefresh}><ArrowRotateCcw /></Button></Tooltip></div></div>{error ? <Alert color="danger" title="操作未完成" description={error} actions={<Button color="secondary" variant="soft" size="sm" onClick={() => void copyText(error)}>复制错误摘要</Button>} /> : null}{notice ? <Alert color="success" title="操作完成" description={notice} actions={<Button color="secondary" variant="ghost" size="sm" onClick={() => setNotice(null)}>关闭</Button>} /> : null}{view === "overview" ? <div className="grid gap-5"><section><div className="mb-3 flex items-center justify-between"><div><h2 className="text-lg font-semibold">需要处理</h2><p className="mt-1 text-sm text-secondary">优先修复会阻止本地调用的问题。</p></div><Badge color={attention.length ? "warning" : "success"} variant="soft">{attention.length ? `${attention.length} 项` : "状态正常"}</Badge></div>{attention.length ? <div className="grid gap-2 md:grid-cols-2">{attention.slice(0, 6).map((item) => <Alert key={item.id} color={item.status === "failed" ? "danger" : "warning"} variant="soft" title={item.name} description={item.blockingReasons[0] ?? (item.hasUnappliedChanges ? "存在尚未应用的草稿。" : statusMeta[item.status].label)} actions={<Button color="secondary" variant="ghost" size="sm" onClick={() => openDetails(item)}>前往处理</Button>} />)}</div> : <div className="rounded-2xl border border-default bg-surface"><EmptyMessage><EmptyMessage.Icon color="secondary"><CheckCircle /></EmptyMessage.Icon><EmptyMessage.Title>没有待处理问题</EmptyMessage.Title><EmptyMessage.Description>已发布实例的配置和本地入口状态正常。</EmptyMessage.Description></EmptyMessage></div>}</section><section><div className="mb-3 flex items-center justify-between"><div><h2 className="text-lg font-semibold">最近活动</h2><p className="mt-1 text-sm text-secondary">最近调用或当前正在运行的实例。</p></div><Button color="secondary" variant="ghost" size="sm" onClick={() => setView("instances")}>查看全部</Button></div><InstanceGrid items={recent} busy={busy} onToggle={toggle} onTest={test} onDocs={docs} onDetails={openDetails} onAudit={() => onNavigate("runs")} /></section></div> : <section className="grid gap-4"><div className="grid gap-2 md:grid-cols-[minmax(240px,1fr)_180px_180px_auto]"><Input aria-label="筛选实例" placeholder="筛选名称、项目、资产或模型" value={query} onChange={(event) => setQuery(event.target.value)} /><Select aria-label="实例类型" value={kind} options={[{ value: "all", label: "全部类型" }, { value: "direct_endpoint", label: "审计直出" }, { value: "canvas", label: "编组方案" }]} onChange={(option) => setKind(option.value as typeof kind)} /><Select aria-label="实例状态" value={status} options={[{ value: "all", label: "全部状态" }, ...Object.entries(statusMeta).map(([value, item]) => ({ value, label: item.label }))]} onChange={(option) => setStatus(option.value as typeof status)} /><Badge color="secondary" variant="soft">{visible.length} / {instances.length}</Badge></div><InstanceGrid items={visible} busy={busy} onToggle={toggle} onTest={test} onDocs={docs} onDetails={openDetails} onAudit={() => onNavigate("runs")} /></section>}</section>;
 }
-function InstanceGrid({ items, busy, onToggle, onTest, onDocs, onDetails, onAudit }: { items: ManagedInstance[]; busy: string | null; onToggle: (item: ManagedInstance) => Promise<void>; onTest: (item: ManagedInstance) => Promise<void>; onDocs: (item: ManagedInstance) => void; onDetails: (item: ManagedInstance) => void; onAudit: () => void }) { return items.length ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{items.map((item) => <InstanceCard key={item.id} item={item} busy={busy} onToggle={onToggle} onTest={onTest} onDocs={onDocs} onDetails={onDetails} onAudit={onAudit} />)}</div> : <div className="rounded-2xl border border-default bg-surface"><EmptyMessage><EmptyMessage.Icon><Search /></EmptyMessage.Icon><EmptyMessage.Title>没有符合条件的实例</EmptyMessage.Title><EmptyMessage.Description>创建审计直出或发布编组方案后会显示在这里。</EmptyMessage.Description></EmptyMessage></div>; }
-function InstanceCard({ item, busy, onToggle, onTest, onDocs, onDetails, onAudit }: { item: ManagedInstance; busy: string | null; onToggle: (item: ManagedInstance) => Promise<void>; onTest: (item: ManagedInstance) => Promise<void>; onDocs: (item: ManagedInstance) => void; onDetails: (item: ManagedInstance) => void; onAudit: () => void }) { const meta = statusMeta[item.status]; return <article className="flex min-h-52 flex-col rounded-2xl border border-default bg-surface p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div className="flex min-w-0 items-center gap-3"><span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-secondary-soft text-secondary">{item.kind === "canvas" ? <Branch className="size-5" /> : <Plugin className="size-5" />}</span><div className="min-w-0"><h3 className="truncate font-semibold">{item.name}</h3><p className="truncate text-xs text-secondary">{item.kind === "canvas" ? item.ownership : item.assetNames.join("、") || "未关联钱包资产"}</p></div></div><Menu><Menu.Trigger><Button color="secondary" variant="ghost" size="sm" uniform aria-label={`${item.name} 更多操作`}><DotsHorizontal /></Button></Menu.Trigger><Menu.Content align="end" minWidth={190}><Menu.Item disabled={item.status !== "running"} onSelect={() => void onTest(item)}><CheckCircle />本地自检</Menu.Item><Menu.Item disabled={!item.baseUrl} onSelect={() => item.baseUrl && void copyText(item.baseUrl)}><Copy />复制 URL</Menu.Item><Menu.Item disabled={!item.baseUrl} onSelect={() => onDocs(item)}><Code />打开文档</Menu.Item><Menu.Item onSelect={onAudit}><History />查看审计</Menu.Item><Menu.Separator /><Menu.Item onSelect={() => onDetails(item)}><SettingsIcon />编辑配置</Menu.Item></Menu.Content></Menu></div><div className="mt-4 flex items-center gap-2"><Badge color={meta.color} variant="soft">{meta.label}</Badge>{item.hasUnappliedChanges ? <Badge color="info" variant="soft">有新草稿</Badge> : null}</div><div className="mt-4 grid gap-1 text-xs text-secondary"><code className="truncate text-info">{item.baseUrl ?? "尚未创建本地出口"}</code><span>{item.publicModels.join("、") || "尚无公开模型"}</span><span>{item.requestCount} 次调用{item.lastCallAtMs ? ` · ${formatTimestamp(item.lastCallAtMs)}` : ""}</span></div>{item.blockingReasons[0] ? <button className="mt-3 flex items-start gap-2 rounded-lg bg-warning-soft p-2 text-left text-xs text-warning" onClick={() => onDetails(item)}><Warning className="mt-0.5 size-4 shrink-0" />{item.blockingReasons[0]}</button> : null}<Button className="mt-auto" color={item.status === "running" ? "warning" : "primary"} variant={item.status === "running" ? "soft" : "solid"} block loading={busy === item.id} disabled={Boolean(busy) || item.status === "unpublished"} onClick={() => void onToggle(item)}>{item.status === "running" ? <Pause /> : <Play />}{item.status === "running" ? "停止" : "启动"}</Button></article>; }
+function InstanceGrid({ items, busy, onToggle, onTest, onDocs, onDetails, onAudit }: { items: ManagedInstance[]; busy: string | null; onToggle: (item: ManagedInstance) => Promise<void>; onTest: (item: ManagedInstance) => Promise<void>; onDocs: (item: ManagedInstance) => void; onDetails: (item: ManagedInstance) => void; onAudit: () => void }) {
+  return items.length ? (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      {items.map((item) => <InstanceCard key={item.id} item={item} busy={busy} onToggle={onToggle} onTest={onTest} onDocs={onDocs} onDetails={onDetails} onAudit={onAudit} />)}
+    </div>
+  ) : (
+    <div className="rounded-2xl border border-default bg-surface">
+      <EmptyMessage>
+        <EmptyMessage.Icon><Search /></EmptyMessage.Icon>
+        <EmptyMessage.Title>没有符合条件的实例</EmptyMessage.Title>
+        <EmptyMessage.Description>创建审计直出或发布编组方案后会显示在这里。</EmptyMessage.Description>
+      </EmptyMessage>
+    </div>
+  );
+}
+
+function InstanceCard({ item, busy, onToggle, onTest, onDocs, onDetails, onAudit }: { item: ManagedInstance; busy: string | null; onToggle: (item: ManagedInstance) => Promise<void>; onTest: (item: ManagedInstance) => Promise<void>; onDocs: (item: ManagedInstance) => void; onDetails: (item: ManagedInstance) => void; onAudit: () => void }) {
+  const meta = statusMeta[item.status];
+  const running = item.status === "running";
+  return (
+    <article className="flex min-h-52 flex-col rounded-2xl border border-default bg-surface p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-secondary-soft text-secondary">{item.kind === "canvas" ? <Branch className="size-5" /> : <Plugin className="size-5" />}</span>
+          <div className="min-w-0">
+            <h3 className="truncate font-semibold">{item.name}</h3>
+            <p className="truncate text-xs text-secondary">{item.kind === "canvas" ? item.ownership : item.assetNames.join("、") || "未关联钱包资产"}</p>
+          </div>
+        </div>
+        <Menu>
+          <Menu.Trigger><Button color="secondary" variant="ghost" size="sm" uniform aria-label={`${item.name} 更多操作`}><DotsHorizontal /></Button></Menu.Trigger>
+          <Menu.Content align="end" minWidth={190}>
+            <Menu.Item disabled={!running} onSelect={() => void onTest(item)}><CheckCircle />本地自检</Menu.Item>
+            <Menu.Item disabled={!item.baseUrl} onSelect={() => item.baseUrl && void copyText(item.baseUrl)}><Copy />复制 URL</Menu.Item>
+            <Menu.Item disabled={!item.baseUrl} onSelect={() => onDocs(item)}><Code />打开文档</Menu.Item>
+            <Menu.Item onSelect={onAudit}><History />查看审计</Menu.Item>
+            <Menu.Separator />
+            <Menu.Item onSelect={() => onDetails(item)}><SettingsIcon />编辑配置</Menu.Item>
+          </Menu.Content>
+        </Menu>
+      </div>
+      <div className="mt-4 flex items-center gap-2"><Badge color={meta.color} variant="soft">{meta.label}</Badge>{item.hasUnappliedChanges ? <Badge color="info" variant="soft">有新草稿</Badge> : null}</div>
+      <div className="mt-4 grid gap-1 text-xs text-secondary">
+        <code className="truncate text-info">{item.baseUrl ?? "尚未创建本地出口"}</code>
+        <span>{item.publicModels.join("、") || "尚无公开模型"}</span>
+        <span>{item.requestCount} 次调用{item.lastCallAtMs ? ` · ${formatTimestamp(item.lastCallAtMs)}` : ""}</span>
+      </div>
+      {item.blockingReasons[0] ? <button className="mt-3 flex items-start gap-2 rounded-lg bg-warning-soft p-2 text-left text-xs text-warning" onClick={() => onDetails(item)}><Warning className="mt-0.5 size-4 shrink-0" />{item.blockingReasons[0]}</button> : null}
+      <InstanceActionButton running={running} loading={busy === item.id} disabled={Boolean(busy) || item.status === "unpublished"} onClick={() => void onToggle(item)} />
+    </article>
+  );
+}
+
+function InstanceActionButton({ running, loading, disabled, onClick }: { running: boolean; loading: boolean; disabled: boolean; onClick: () => void }) {
+  const Icon = running ? Pause : Play;
+  return (
+    <button type="button" className={`instance-primary-action ${running ? "running" : "stopped"}`} disabled={disabled} aria-busy={loading} onClick={onClick}>
+      <span className="instance-primary-action-content">
+        <Icon aria-hidden="true" />
+        <span>{loading ? "处理中" : running ? "停止" : "启动"}</span>
+      </span>
+    </button>
+  );
+}

@@ -1,7 +1,10 @@
-use std::{
+﻿use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -34,12 +37,13 @@ use apiarray_runtime::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{
-    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalSize, Manager, Size, State, WebviewWindow, WindowEvent,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
 use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_window_state::StateFlags;
 use tokio::sync::Mutex;
 
 include!("state.rs");
@@ -55,15 +59,11 @@ include!("commands/publishers.rs");
 include!("commands/instances.rs");
 
 #[tauri::command]
-fn set_window_material_theme(dark: bool, window: WebviewWindow) -> Result<(), String> {
+fn set_window_material_theme(dark: Option<bool>, window: WebviewWindow) -> Result<(), String> {
     window
-        .set_theme(Some(if dark {
-            tauri::Theme::Dark
-        } else {
-            tauri::Theme::Light
-        }))
+        .set_theme(dark.map(|dark| if dark { tauri::Theme::Dark } else { tauri::Theme::Light }))
         .map_err(|error| format!("无法同步窗口主题：{error}"))?;
-    apply_native_material(&window, Some(dark));
+    apply_native_material(&window, dark);
     Ok(())
 }
 
@@ -79,7 +79,7 @@ mod tests {
         ShellUiState, WorkspaceUiState, empty_workspace, model_count_from_payload,
         apply_instance_stop, managed_instance_id, parse_managed_instance_id, new_canvas_graph,
         read_ui_state, sanitize_ui_state, workspace_name, DirectEndpoint, ManagedInstanceKind,
-        NodeKind, SecretRef, UI_STATE_KEY,
+        NodeKind, SecretRef, UI_STATE_KEY, webview_assets_changed,
     };
     use apiarray_runtime::persistence::WorkspaceRepository;
 
@@ -212,5 +212,12 @@ mod tests {
         assert!(workspace.runtime_state.enabled_publishers.contains("canvas-publisher"));
         assert!(apply_instance_stop(&mut workspace, "canvas:default:main").expect("stop canvas"));
         assert!(!workspace.runtime_state.enabled_publishers.contains("canvas-publisher"));
+    }
+
+    #[test]
+    fn webview_assets_are_refreshed_only_when_the_embedded_build_changes() {
+        assert!(webview_assets_changed(None, "build-b"));
+        assert!(webview_assets_changed(Some("build-a\n"), "build-b"));
+        assert!(!webview_assets_changed(Some("build-b\n"), "build-b"));
     }
 }

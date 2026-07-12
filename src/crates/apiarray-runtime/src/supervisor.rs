@@ -248,6 +248,25 @@ impl PublisherSupervisor {
             .collect()
     }
 
+    /// Stop all in-process publisher servers without changing persisted run intent.
+    pub async fn shutdown_all(&self) {
+        let _operation = self.operation_lock.lock().await;
+        let senders = {
+            let mut publishers = self.publishers.write().await;
+            publishers
+                .values_mut()
+                .filter_map(|publisher| {
+                    publisher.status.lifecycle = PublisherLifecycle::Stopping;
+                    publisher.terminal_state = Some(PublisherLifecycle::Stopped);
+                    publisher.shutdown.take()
+                })
+                .collect::<Vec<_>>()
+        };
+        for sender in senders {
+            let _ = sender.send(());
+        }
+    }
+
     async fn request_stop(
         &self,
         publisher_id: &str,

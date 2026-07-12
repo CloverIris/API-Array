@@ -1,4 +1,4 @@
-use crate::persistence::{WorkspaceRecovery, WorkspaceRepository};
+﻿use crate::persistence::{WorkspaceRecovery, WorkspaceRepository};
 use crate::resilience::AuditSink;
 use crate::secret::{SecretStore, StoreSecretResolver};
 use crate::supervisor::{PublisherRuntimeStatus, PublisherSupervisor, SupervisorSnapshot};
@@ -23,7 +23,7 @@ pub struct ControlPlaneSnapshot {
     pub notifications: Vec<AggregatedNotification>,
 }
 
-/// UI、CLI 和未来 Tauri 宿主共享的本地 Control Plane 会话。
+/// Local control-plane session shared by UI, CLI, and the desktop host.
 #[derive(Clone)]
 pub struct ControlPlane {
     repository: WorkspaceRepository,
@@ -35,11 +35,10 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
-    /// 从本地工作区打开一个可运行会话；未知 Schema 只读工作区不会启动 Runtime。
-    ///
+    /// 浠庢湰鍦板伐浣滃尯鎵撳紑涓€涓彲杩愯浼氳瘽锛涙湭鐭?Schema 鍙宸ヤ綔鍖轰笉浼氬惎鍔?Runtime銆?    ///
     /// # Errors
     ///
-    /// 工作区不存在、只读、配置无效或 Runtime 初始化失败时返回错误。
+    /// 宸ヤ綔鍖轰笉瀛樺湪銆佸彧璇汇€侀厤缃棤鏁堟垨 Runtime 鍒濆鍖栧け璐ユ椂杩斿洖閿欒銆?
     pub fn open(
         repository: WorkspaceRepository,
         secret_store: Arc<dyn SecretStore>,
@@ -63,7 +62,7 @@ impl ControlPlane {
         })
     }
 
-    /// 启动工作区中上次保持启用的 Publisher。缺少 Secret 的 Publisher 会被保留为未启动。
+    /// 鍚姩宸ヤ綔鍖轰腑涓婃淇濇寔鍚敤鐨?Publisher銆傜己灏?Secret 鐨?Publisher 浼氳淇濈暀涓烘湭鍚姩銆?
     pub async fn restore_enabled(&self) -> Vec<(String, RuntimeError)> {
         let workspace = self.workspace.lock().await.clone();
         let availability = self.secret_status(&workspace);
@@ -86,7 +85,7 @@ impl ControlPlane {
                     id.clone(),
                     RuntimeError::new(
                         RuntimeErrorCode::SecretUnavailable,
-                        "Publisher 缺少本机 Secret，未恢复运行",
+                        "Publisher 缂哄皯鏈満 Secret锛屾湭鎭㈠杩愯",
                     ),
                 )
             })
@@ -104,11 +103,10 @@ impl ControlPlane {
         errors
     }
 
-    /// 保存 Secret 后不把明文写入工作区配置。
-    ///
+    /// 淇濆瓨 Secret 鍚庝笉鎶婃槑鏂囧啓鍏ュ伐浣滃尯閰嶇疆銆?    ///
     /// # Errors
     ///
-    /// 系统凭据库不可用时返回错误。
+    /// 绯荤粺鍑嵁搴撲笉鍙敤鏃惰繑鍥為敊璇€?
     pub fn store_secret(
         &self,
         reference: &apiarray_core::secret::SecretRef,
@@ -117,11 +115,15 @@ impl ControlPlane {
         self.secret_store.put(reference, value)
     }
 
-    /// 启动并记录自动恢复意图。
-    ///
+    /// Stop in-process runtime tasks without changing persisted workspace run intent.
+    pub async fn shutdown(&self) {
+        self.supervisor.shutdown_all().await;
+    }
+
+    /// 鍚姩骞惰褰曡嚜鍔ㄦ仮澶嶆剰鍥俱€?    ///
     /// # Errors
     ///
-    /// Publisher 缺少 Secret、配置持久化失败或启动失败时返回错误。
+    /// Publisher 缂哄皯 Secret銆侀厤缃寔涔呭寲澶辫触鎴栧惎鍔ㄥけ璐ユ椂杩斿洖閿欒銆?
     pub async fn start_publisher(
         &self,
         publisher_id: &str,
@@ -136,11 +138,10 @@ impl ControlPlane {
         self.supervisor.status(publisher_id).await
     }
 
-    /// 暂停 Publisher 并移除自动恢复意图。
-    ///
+    /// 鏆傚仠 Publisher 骞剁Щ闄よ嚜鍔ㄦ仮澶嶆剰鍥俱€?    ///
     /// # Errors
     ///
-    /// Publisher 未运行或工作区无法保存时返回错误。
+    /// Publisher 鏈繍琛屾垨宸ヤ綔鍖烘棤娉曚繚瀛樻椂杩斿洖閿欒銆?
     pub async fn pause_publisher(
         &self,
         publisher_id: &str,
@@ -149,11 +150,10 @@ impl ControlPlane {
         self.supervisor.pause(publisher_id).await
     }
 
-    /// 停止 Publisher 并移除自动恢复意图。
-    ///
+    /// 鍋滄 Publisher 骞剁Щ闄よ嚜鍔ㄦ仮澶嶆剰鍥俱€?    ///
     /// # Errors
     ///
-    /// Publisher 未运行或工作区无法保存时返回错误。
+    /// Publisher 鏈繍琛屾垨宸ヤ綔鍖烘棤娉曚繚瀛樻椂杩斿洖閿欒銆?
     pub async fn stop_publisher(
         &self,
         publisher_id: &str,

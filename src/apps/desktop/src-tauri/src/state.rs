@@ -14,6 +14,7 @@ struct DesktopState {
     gateway: Mutex<Option<apiarray_runtime::gateway::LocalGateway>>,
     gateway_error: Mutex<Option<String>>,
     startup_error: Mutex<Option<String>>,
+    is_quitting: AtomicBool,
 }
 
 struct ActiveInspectionRepository { current: std::sync::RwLock<InspectionRepository> }
