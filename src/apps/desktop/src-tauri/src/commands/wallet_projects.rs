@@ -214,9 +214,9 @@ async fn update_direct_endpoint(input: DirectEndpointInput, state: State<'_, Des
 async fn set_direct_endpoint_enabled(endpoint_id: &str, enabled: bool, state: &DesktopState) -> Result<Vec<DirectEndpointItem>, String> { let mut workspace = load_workspace(&state.repository)?; let endpoint = workspace.direct_endpoints.get_mut(endpoint_id).ok_or_else(|| "直出端点不存在。".to_owned())?; if enabled && !state.secret_store.contains(&endpoint.token_ref) { return Err("直出端点缺少本地 Token。".to_owned()); } endpoint.enabled = enabled; workspace.validate().map_err(|error| error.message)?; state.repository.save(&workspace).map_err(safe_error)?; restart_gateway(state).await?; direct_endpoint_items(state) }
 
 #[tauri::command]
-async fn start_direct_endpoint(input: DirectEndpointActionInput, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { set_direct_endpoint_enabled(&input.endpoint_id, true, &state).await }
+async fn start_direct_endpoint(input: DirectEndpointActionInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { let result = set_direct_endpoint_enabled(&input.endpoint_id, true, &state).await?; let _ = app.emit("desktop:instances-changed", ()); Ok(result) }
 #[tauri::command]
-async fn pause_direct_endpoint(input: DirectEndpointActionInput, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { set_direct_endpoint_enabled(&input.endpoint_id, false, &state).await }
+async fn pause_direct_endpoint(input: DirectEndpointActionInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { let result = set_direct_endpoint_enabled(&input.endpoint_id, false, &state).await?; let _ = app.emit("desktop:instances-changed", ()); Ok(result) }
 
 #[tauri::command]
 async fn delete_direct_endpoint(input: DirectEndpointActionInput, state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { let mut workspace = load_workspace(&state.repository)?; let endpoint = workspace.direct_endpoints.remove(&input.endpoint_id).ok_or_else(|| "直出端点不存在。".to_owned())?; let _ = state.secret_store.delete(&endpoint.token_ref); state.repository.save(&workspace).map_err(safe_error)?; restart_gateway(&state).await?; direct_endpoint_items(&state) }

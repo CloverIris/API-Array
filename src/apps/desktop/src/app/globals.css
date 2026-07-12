@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@openai/apps-sdk-ui/css";
+@import "./instance-rack.css";
 @source "../../node_modules/@openai/apps-sdk-ui";
 
 :root, [data-theme] {

@@ -19,9 +19,9 @@ export type DesktopRoute =
   | { kind: "canvas"; projectId: string; canvasId: string; tab: CanvasTab };
 
 export const defaultUiState: WorkspaceUiState = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   themePreference: "system",
-  lastPage: "overview",
+  lastPage: "instances",
   workspaceIntent: "manage_apis",
   shell: { leftSidebarCollapsed: false, rightInspectorOpen: false, rightInspectorPinned: false, leftWidth: 248, rightWidth: 320 },
   workflows: {},
@@ -73,7 +73,7 @@ export function useDesktopWorkspaceController() {
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
   const openGlobal = useCallback((page: AppPage) => updateUiState((current) => ({ ...current, lastPage: page, selectedProjectId: null, selectedCanvasId: null })), [updateUiState]);
-  const openCanvas = useCallback((projectId: string, canvasId: string) => updateUiState((current) => ({ ...current, selectedProjectId: projectId, selectedCanvasId: canvasId, expandedProjectIds: unique([...current.expandedProjectIds, projectId]) })), [updateUiState]);
+  const openCanvas = useCallback((projectId: string, canvasId: string, tab?: CanvasTab) => updateUiState((current) => ({ ...current, selectedProjectId: projectId, selectedCanvasId: canvasId, expandedProjectIds: unique([...current.expandedProjectIds, projectId]), canvasTabs: tab ? { ...current.canvasTabs, [canvasId]: tab } : current.canvasTabs })), [updateUiState]);
   const setCanvasTab = useCallback((tab: CanvasTab) => updateUiState((current) => current.selectedCanvasId ? ({ ...current, canvasTabs: { ...current.canvasTabs, [current.selectedCanvasId]: tab } }) : current), [updateUiState]);
   const toggleProject = useCallback((id: string) => updateUiState((current) => ({ ...current, expandedProjectIds: toggle(current.expandedProjectIds, id) })), [updateUiState]);
   const toggleFolder = useCallback((id: string) => updateUiState((current) => ({ ...current, expandedFolderIds: toggle(current.expandedFolderIds, id) })), [updateUiState]);
@@ -81,7 +81,7 @@ export function useDesktopWorkspaceController() {
   const selectedCanvas = uiState.selectedProjectId && uiState.selectedCanvasId ? projectTree.projects[uiState.selectedProjectId]?.canvases[uiState.selectedCanvasId] : null;
   const route: DesktopRoute = selectedCanvas && uiState.selectedProjectId && uiState.selectedCanvasId
     ? { kind: "canvas", projectId: uiState.selectedProjectId, canvasId: uiState.selectedCanvasId, tab: uiState.canvasTabs[uiState.selectedCanvasId] ?? "overview" }
-    : { kind: "global", page: isAppPage(uiState.lastPage) ? uiState.lastPage : "overview" };
+    : { kind: "global", page: isAppPage(uiState.lastPage) ? uiState.lastPage : "instances" };
 
   return { snapshot, setSnapshot, projectTree, setProjectTree, route, uiState, updateUiState, openGlobal, openCanvas, setCanvasTab, toggleProject, toggleFolder, loading, error, setError, refresh };
 }
@@ -92,9 +92,11 @@ function normalizeProjectTree(tree: ProjectTree): ProjectTree {
 }
 
 function normalizeUiState(state: WorkspaceUiState): WorkspaceUiState {
-  return { ...defaultUiState, ...state, schemaVersion: 4, shell: { ...defaultUiState.shell, ...(state?.shell ?? {}) }, workflows: state?.workflows ?? {}, selectedProjectId: state?.selectedProjectId ?? null, selectedCanvasId: state?.selectedCanvasId ?? null, expandedProjectIds: Array.isArray(state?.expandedProjectIds) ? state.expandedProjectIds : [], expandedFolderIds: Array.isArray(state?.expandedFolderIds) ? state.expandedFolderIds : [], canvasTabs: state?.canvasTabs ?? {} };
+  const oldPage = state?.lastPage;
+  const lastPage = oldPage === "overview" ? "wallet" : oldPage === "workflows" ? "compositions" : oldPage;
+  return { ...defaultUiState, ...state, schemaVersion: 5, lastPage: isAppPage(lastPage) ? lastPage : "instances", shell: { ...defaultUiState.shell, ...(state?.shell ?? {}) }, workflows: state?.workflows ?? {}, selectedProjectId: state?.selectedProjectId ?? null, selectedCanvasId: state?.selectedCanvasId ?? null, expandedProjectIds: Array.isArray(state?.expandedProjectIds) ? state.expandedProjectIds : [], expandedFolderIds: Array.isArray(state?.expandedFolderIds) ? state.expandedFolderIds : [], canvasTabs: state?.canvasTabs ?? {} };
 }
 
 function toggle(items: string[], id: string) { return items.includes(id) ? items.filter((item) => item !== id) : [...items, id]; }
 function unique(items: string[]) { return [...new Set(items)]; }
-function isAppPage(value: string): value is AppPage { return ["overview", "direct", "workflows", "runs", "notifications", "templates", "settings"].includes(value); }
+function isAppPage(value: unknown): value is AppPage { return typeof value === "string" && ["instances", "wallet", "direct", "compositions", "runs", "notifications", "templates", "settings"].includes(value); }

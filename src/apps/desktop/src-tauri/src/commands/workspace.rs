@@ -45,12 +45,17 @@ fn read_ui_state(repository: &impl RepositoryAccess) -> WorkspaceUiState {
 }
 
 fn sanitize_ui_state(state: &mut WorkspaceUiState) -> Result<(), String> {
-    if matches!(state.schema_version, 1 | 2 | 3) {
+    if matches!(state.schema_version, 1 | 2 | 3 | 4) {
         state.schema_version = UI_STATE_SCHEMA_VERSION;
         state.shell.left_width = 248;
         state.shell.right_width = 320;
         state.shell.right_inspector_open = false;
         state.shell.right_inspector_pinned = false;
+        state.last_page = match state.last_page.as_str() {
+            "overview" => "wallet".to_owned(),
+            "workflows" => "compositions".to_owned(),
+            _ => state.last_page.clone(),
+        };
     } else if state.schema_version != UI_STATE_SCHEMA_VERSION {
         return Err("不支持的桌面 UI 状态版本。".to_owned());
     }
@@ -58,9 +63,10 @@ fn sanitize_ui_state(state: &mut WorkspaceUiState) -> Result<(), String> {
     state.shell.right_width = state.shell.right_width.clamp(296, 420);
     if !matches!(
         state.last_page.as_str(),
-        "overview"
+        "instances"
+            | "wallet"
             | "direct"
-            | "workflows"
+            | "compositions"
             | "runs"
             | "notifications"
             | "templates"
@@ -232,6 +238,7 @@ async fn start_publisher(
 #[tauri::command]
 async fn run_canvas(
     input: CanvasActionInput,
+    app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
     let mut workspace = load_workspace(&state.repository)?;
@@ -262,12 +269,15 @@ async fn run_canvas(
     state.repository.save(&workspace).map_err(safe_error)?;
     reload_control_plane(&state).await?;
     restart_gateway(&state).await?;
-    snapshot(&state).await
+    let result = snapshot(&state).await?;
+    let _ = app.emit("desktop:instances-changed", ());
+    Ok(result)
 }
 
 #[tauri::command]
 async fn stop_canvas(
     input: CanvasActionInput,
+    app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
     let mut workspace = load_workspace(&state.repository)?;
@@ -284,12 +294,15 @@ async fn stop_canvas(
     state.repository.save(&workspace).map_err(safe_error)?;
     reload_control_plane(&state).await?;
     restart_gateway(&state).await?;
-    snapshot(&state).await
+    let result = snapshot(&state).await?;
+    let _ = app.emit("desktop:instances-changed", ());
+    Ok(result)
 }
 
 #[tauri::command]
 async fn pause_canvas(
     input: CanvasActionInput,
+    app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
     let mut workspace = load_workspace(&state.repository)?;
@@ -307,7 +320,9 @@ async fn pause_canvas(
     state.repository.save(&workspace).map_err(safe_error)?;
     reload_control_plane(&state).await?;
     restart_gateway(&state).await?;
-    snapshot(&state).await
+    let result = snapshot(&state).await?;
+    let _ = app.emit("desktop:instances-changed", ());
+    Ok(result)
 }
 
 #[tauri::command]

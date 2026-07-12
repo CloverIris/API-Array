@@ -54,14 +54,15 @@ async fn snapshot(state: &DesktopState) -> Result<DesktopSnapshot, String> {
     };
 
     let workspace = load_workspace(&state.repository).ok();
+    let gateway = state.gateway.lock().await;
     Ok(DesktopSnapshot {
         initialized: control.is_some(),
         startup_error,
         control,
         gateway: DesktopGatewaySnapshot {
-            running: state.gateway.lock().await.is_some(),
+            running: gateway.is_some(),
             base_url: workspace.as_ref().map_or_else(|| "http://127.0.0.1:7480".to_owned(), |workspace| format!("http://{}:{}", workspace.gateway.listen_address, workspace.gateway.port)),
-            entry_count: workspace.as_ref().map_or(0, |workspace| workspace.direct_endpoints.values().filter(|endpoint| endpoint.enabled).count() + workspace.runtime_state.enabled_publishers.len()),
+            entry_count: gateway.as_ref().map_or(0, |item| item.entry_prefixes().len()),
             error: state.gateway_error.lock().await.clone(),
         },
     })

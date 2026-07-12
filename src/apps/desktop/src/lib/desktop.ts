@@ -115,6 +115,64 @@ export interface DirectEndpointItem {
   enabled: boolean; tokenConfigured: boolean; baseUrl: string; publicModels: string[]; requestCount: number;
 }
 
+export type ManagedInstanceKind = "direct_endpoint" | "canvas";
+export type ManagedInstanceStatus = "running" | "stopped" | "starting" | "stopping" | "blocked" | "failed" | "unpublished";
+export interface ManagedInstance {
+  id: string;
+  kind: ManagedInstanceKind;
+  name: string;
+  ownership: string;
+  projectId: string | null;
+  projectName: string | null;
+  canvasId: string | null;
+  directEndpointId: string | null;
+  auditPublisherId: string | null;
+  assetNames: string[];
+  baseUrl: string | null;
+  publicModels: string[];
+  tokenReady: boolean;
+  secretsReady: boolean;
+  desiredRunning: boolean;
+  status: ManagedInstanceStatus;
+  blockingReasons: string[];
+  repairTarget: string | null;
+  draftRevision: number | null;
+  appliedRevision: number | null;
+  hasUnappliedChanges: boolean;
+  requestCount: number;
+  lastCallAtMs: number | null;
+  lastLatencyMs: number | null;
+  retryCount: number;
+  failoverCount: number;
+  lastError: string | null;
+}
+export interface InstanceRackSnapshot {
+  gateway: DesktopSnapshot["gateway"];
+  instances: ManagedInstance[];
+  runningCount: number;
+  stoppedCount: number;
+  blockedCount: number;
+  failedCount: number;
+}
+export interface ManagedInstanceActionResult {
+  instanceId: string;
+  previousStatus: ManagedInstanceStatus;
+  nextStatus: ManagedInstanceStatus;
+  success: boolean;
+  skipped: boolean;
+  message: string;
+  repairTarget: string | null;
+}
+export interface InstanceBatchResult {
+  total: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  gatewayRefreshed: boolean;
+  results: ManagedInstanceActionResult[];
+  snapshot: InstanceRackSnapshot;
+}
+
 export interface WalletAssetImpact { directEndpoints: string[]; canvases: string[]; }
 
 export interface ProjectTree {
@@ -144,7 +202,7 @@ export interface WorkflowGraph {
 export type CanvasTab = "overview" | "workflow" | "routes" | "publisher" | "docs" | "runs";
 
 export interface WorkspaceUiState {
-  schemaVersion: 4;
+  schemaVersion: 5;
   themePreference: ThemePreference;
   lastPage: string;
   workspaceIntent: WorkspaceIntent;
@@ -249,6 +307,14 @@ export const updateDirectEndpoint = (input: { endpointId: string; assetId: strin
 export const deleteDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("delete_direct_endpoint", { input: { endpointId } });
 export const startDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("start_direct_endpoint", { input: { endpointId } });
 export const pauseDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("pause_direct_endpoint", { input: { endpointId } });
+export const getInstanceRackSnapshot = () => invoke<InstanceRackSnapshot>("instance_rack_snapshot");
+export const startManagedInstance = (instanceId: string, allowWarnings = false) => invoke<InstanceBatchResult>("start_managed_instance", { input: { instanceId, allowWarnings } });
+export const stopManagedInstance = (instanceId: string) => invoke<InstanceBatchResult>("stop_managed_instance", { input: { instanceId } });
+export const testManagedInstance = (instanceId: string) => invoke<PublisherConnectionTest>("test_managed_instance", { input: { instanceId } });
+export const startAllInstances = () => invoke<InstanceBatchResult>("start_all_instances");
+export const stopAllInstances = () => invoke<InstanceBatchResult>("stop_all_instances");
+export const startInstancesByKind = (kind: ManagedInstanceKind, allowWarnings = false) => invoke<InstanceBatchResult>("start_instances_by_kind", { input: { kind, allowWarnings } });
+export const stopInstancesByKind = (kind: ManagedInstanceKind) => invoke<InstanceBatchResult>("stop_instances_by_kind", { input: { kind } });
 export const testDirectEndpoint = (endpointId: string) => invoke<PublisherConnectionTest>("test_direct_endpoint", { endpointId });
 export const getDirectEndpointTemplates = (endpointId: string) => invoke<CodeTemplate[]>("direct_endpoint_templates", { endpointId });
 export const getDirectEndpointLiveDocument = (endpointId: string, language: TemplateLanguage) => invoke<LiveDocument>("direct_endpoint_live_document", { endpointId, language });

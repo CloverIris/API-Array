@@ -13,6 +13,7 @@ pub struct GatewayEntry {
 
 pub struct LocalGateway {
     address: SocketAddr,
+    entry_prefixes: Vec<String>,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<()>>,
 }
@@ -25,21 +26,31 @@ impl LocalGateway {
         let listener = TcpListener::bind(address).await.map_err(|_| RuntimeError::new(RuntimeErrorCode::PublisherBindFailed, format!("无法绑定统一审计网关 {address}")))?;
         let address = listener.local_addr().map_err(|_| RuntimeError::new(RuntimeErrorCode::PublisherBindFailed, "无法读取统一审计网关地址"))?;
         let mut router = Router::new();
+        let mut entry_prefixes = Vec::with_capacity(entries.len());
         for entry in entries {
             if !entry.prefix.starts_with('/') || entry.prefix.contains("..") {
                 return Err(RuntimeError::new(RuntimeErrorCode::CoreRejected, "统一审计网关入口前缀无效"));
             }
+            entry_prefixes.push(entry.prefix.clone());
             router = router.nest(&entry.prefix, entry.state.router());
         }
         let (shutdown, receiver) = oneshot::channel();
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, router).with_graceful_shutdown(async { let _ = receiver.await; }).await;
         });
-        Ok(Self { address, shutdown: Some(shutdown), task: Some(task) })
+        Ok(Self { address, entry_prefixes, shutdown: Some(shutdown), task: Some(task) })
     }
 
     #[must_use]
     pub const fn address(&self) -> SocketAddr { self.address }
+
+    #[must_use]
+    pub fn entry_prefixes(&self) -> &[String] { &self.entry_prefixes }
+
+    #[must_use]
+    pub fn contains_prefix(&self, prefix: &str) -> bool {
+        self.entry_prefixes.iter().any(|item| item == prefix)
+    }
 
     pub async fn stop(mut self) {
         if let Some(shutdown) = self.shutdown.take() { let _ = shutdown.send(()); }
@@ -64,6 +75,7 @@ mod tests {
         let gateway = LocalGateway::start("127.0.0.1:0".parse::<SocketAddr>().expect("loopback address"), Vec::new())
             .await.expect("loopback gateway starts");
         assert!(gateway.address().ip().is_loopback());
+        assert!(gateway.entry_prefixes().is_empty());
         gateway.stop().await;
     }
 

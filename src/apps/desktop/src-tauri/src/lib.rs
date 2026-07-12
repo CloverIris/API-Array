@@ -51,6 +51,8 @@ include!("commands/providers.rs");
 
 include!("commands/publishers.rs");
 
+include!("commands/instances.rs");
+
 #[tauri::command]
 fn set_window_material_theme(dark: bool, window: WebviewWindow) -> Result<(), String> {
     window
@@ -74,7 +76,9 @@ include!("host.rs");
 mod tests {
     use super::{
         ShellUiState, WorkspaceUiState, empty_workspace, model_count_from_payload,
-        new_canvas_graph, read_ui_state, sanitize_ui_state, workspace_name, NodeKind, UI_STATE_KEY,
+        apply_instance_stop, managed_instance_id, parse_managed_instance_id, new_canvas_graph,
+        read_ui_state, sanitize_ui_state, workspace_name, DirectEndpoint, ManagedInstanceKind,
+        NodeKind, SecretRef, UI_STATE_KEY,
     };
     use apiarray_runtime::persistence::WorkspaceRepository;
 
@@ -137,7 +141,7 @@ mod tests {
 
         sanitize_ui_state(&mut state).expect("version one state migrates");
 
-        assert_eq!(state.schema_version, 4);
+        assert_eq!(state.schema_version, 5);
         assert_eq!(state.theme_preference, super::ThemePreference::System);
         assert!(!state.shell.right_inspector_open);
         assert!(!state.shell.right_inspector_pinned);
@@ -164,5 +168,36 @@ mod tests {
             model_count_from_payload(&serde_json::json!({"models": []})),
             0
         );
+    }
+
+    #[test]
+    fn managed_instance_ids_are_stable_and_explicitly_scoped() {
+        let direct = managed_instance_id(ManagedInstanceKind::DirectEndpoint, "primary", None);
+        let canvas = managed_instance_id(ManagedInstanceKind::Canvas, "project-a", Some("canvas-b"));
+        assert_eq!(direct, "direct:primary");
+        assert_eq!(canvas, "canvas:project-a:canvas-b");
+        assert_eq!(parse_managed_instance_id(&direct).expect("direct id").0, ManagedInstanceKind::DirectEndpoint);
+        let parsed = parse_managed_instance_id(&canvas).expect("canvas id");
+        assert_eq!(parsed.1, "project-a");
+        assert_eq!(parsed.2.as_deref(), Some("canvas-b"));
+        assert!(parse_managed_instance_id("canvas:missing").is_err());
+    }
+
+    #[test]
+    fn stopping_one_instance_does_not_change_another_instance_intent() {
+        let mut workspace = empty_workspace("rack-test");
+        workspace.direct_endpoints.insert("direct-a".to_owned(), DirectEndpoint {
+            id: "direct-a".to_owned(), name: "Direct A".to_owned(), alias: "direct-a".to_owned(),
+            asset_id: "asset-a".to_owned(), token_ref: SecretRef::parse("secret://direct/direct-a/token").expect("secret ref"),
+            enabled: true, models: Vec::new(), timeout_ms: 30_000, max_retries: 2,
+            audit_tags: std::collections::BTreeMap::new(), billing_override: None,
+        });
+        workspace.projects.projects.get_mut("default").expect("project").canvases.get_mut("main").expect("canvas").publisher_id = Some("canvas-publisher".to_owned());
+        workspace.runtime_state.enabled_publishers.insert("canvas-publisher".to_owned());
+        assert!(apply_instance_stop(&mut workspace, "direct:direct-a").expect("stop direct"));
+        assert!(!workspace.direct_endpoints["direct-a"].enabled);
+        assert!(workspace.runtime_state.enabled_publishers.contains("canvas-publisher"));
+        assert!(apply_instance_stop(&mut workspace, "canvas:default:main").expect("stop canvas"));
+        assert!(!workspace.runtime_state.enabled_publishers.contains("canvas-publisher"));
     }
 }

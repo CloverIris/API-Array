@@ -1,5 +1,16 @@
 # API ARRAY 开发约定
 
+## V0.7 全局实例机架强制约束
+
+开始运行控制、导航、网关或实例状态相关工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V0.7_全局实例机架.md`。
+
+- 实例机架是 Direct Endpoint 与 Canvas Publisher 的只读运行投影，不是新的配置事实源。
+- `ManagedInstance` 不得持久化为第三份业务实体。
+- 运行中状态必须由 LocalGateway 实际挂载与运行意图共同确认。
+- 批量启停必须由 Rust 一次预检、一次保存和一次网关刷新完成，禁止前端循环调用单项命令。
+- Canvas 实例命令必须保留显式 `projectId + canvasId` 归属校验。
+- 全部停止只关闭业务入口，不删除配置、钱包资产、Secret 或工作区数据。
+
 ## V0.6 SQLite 存储与活文档强制约束
 
 开始任何 Workspace、持久化、审计、体检、Secret 查看或活文档工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V0.6_SQLite存储与活文档.md`。

@@ -287,6 +287,108 @@ struct DirectEndpointItem {
     request_count: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ManagedInstanceKind {
+    DirectEndpoint,
+    Canvas,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ManagedInstanceStatus {
+    Running,
+    Stopped,
+    Starting,
+    Stopping,
+    Blocked,
+    Failed,
+    Unpublished,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedInstance {
+    id: String,
+    kind: ManagedInstanceKind,
+    name: String,
+    ownership: String,
+    project_id: Option<String>,
+    project_name: Option<String>,
+    canvas_id: Option<String>,
+    direct_endpoint_id: Option<String>,
+    audit_publisher_id: Option<String>,
+    asset_names: Vec<String>,
+    base_url: Option<String>,
+    public_models: Vec<String>,
+    token_ready: bool,
+    secrets_ready: bool,
+    desired_running: bool,
+    status: ManagedInstanceStatus,
+    blocking_reasons: Vec<String>,
+    repair_target: Option<String>,
+    draft_revision: Option<u64>,
+    applied_revision: Option<u64>,
+    has_unapplied_changes: bool,
+    request_count: u64,
+    last_call_at_ms: Option<u64>,
+    last_latency_ms: Option<u64>,
+    retry_count: u32,
+    failover_count: u32,
+    last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceRackSnapshot {
+    gateway: DesktopGatewaySnapshot,
+    instances: Vec<ManagedInstance>,
+    running_count: usize,
+    stopped_count: usize,
+    blocked_count: usize,
+    failed_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedInstanceActionInput {
+    instance_id: String,
+    #[serde(default)]
+    allow_warnings: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedInstanceKindInput {
+    kind: ManagedInstanceKind,
+    #[serde(default)]
+    allow_warnings: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManagedInstanceActionResult {
+    instance_id: String,
+    previous_status: ManagedInstanceStatus,
+    next_status: ManagedInstanceStatus,
+    success: bool,
+    skipped: bool,
+    message: String,
+    repair_target: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceBatchResult {
+    total: usize,
+    succeeded: usize,
+    failed: usize,
+    skipped: usize,
+    gateway_refreshed: bool,
+    results: Vec<ManagedInstanceActionResult>,
+    snapshot: InstanceRackSnapshot,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WalletAssetImpact {
