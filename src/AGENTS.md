@@ -1,5 +1,15 @@
 # API ARRAY 开发约定
 
+## V0.6 SQLite 存储与活文档强制约束
+
+开始任何 Workspace、持久化、审计、体检、Secret 查看或活文档工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V0.6_SQLite存储与活文档.md`。
+
+- Runtime `StorageService` 是唯一持久化语义边界；Core、Tauri 命令和前端不得直接编写 SQL。
+- 正式工作区为 `workspace.sqlite3` 目录包；JSON 仅允许作为版本化 payload 或显式脱敏交换格式。
+- 启动失败不得自动删除工作区、审计、报告或 Windows 凭据。
+- Secret 明文只存在于 Windows Credential Manager 和受控短时内存中。
+- 活文档必须由 Core 的结构化 `LiveDocument` 生成，禁止前端维护静态 Provider 代码说明。
+
 ## V0.5 Canonical 编组图强制约束
 
 开始任何 Canvas、Graph、Publisher 或 Runtime 路由工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V0.5_Canonical编组图与协议综合器.md`。
@@ -244,7 +254,7 @@ CLI 输入输出结构必须版本化，至少预留 `schema_version` 字段。
 - 全局层管理钱包、运行总览、综合器、Publisher 总面板和审计；Project/Folder 仅组织 Canvas。
 - Canvas 是唯一编辑与运行边界，拥有独立 Graph、草稿/应用版本、Publisher、活文档和记录。
 - 所有 Canvas IPC 变更必须显式提供 `projectId + canvasId`，不得从当前 UI 选择推断后端目标。
-- 旧 `workspace.graph` 仅可用于迁移和兼容读取，正式编辑页面不得再使用。
+- Workspace V6 不再包含全局 `workspace.graph`；每个 Canvas 的 Graph V2 是唯一编组事实来源。
 - API Wallet 是 Workspace 共享资产；删除 Canvas 不得删除钱包资产或上游 Secret。
 - 复制 Canvas 不复制 Token、端口或运行状态；Secret 不通过 IPC 返回，也不进入日志、UI State 或导出。
 - 前端边界必须规范化 camelCase/snake_case 旧数据，缺失数组和映射一律安全降级，禁止未检查的 `.map()`。

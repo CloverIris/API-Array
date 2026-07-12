@@ -1,11 +1,12 @@
-fn workspace_repository(app: &AppHandle) -> Result<WorkspaceRepository, String> {
+fn workspace_repository(app: &AppHandle) -> Result<(WorkspaceRepository, apiarray_runtime::persistence::LauncherRepository), String> {
     let data_dir: PathBuf = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
-    Ok(WorkspaceRepository::new(
-        data_dir.join("workspaces").join(DEFAULT_WORKSPACE_ID),
-    ))
+    let launcher = apiarray_runtime::persistence::LauncherRepository::new(data_dir.join("launcher.sqlite3"));
+    let default_root = data_dir.join("workspaces").join(DEFAULT_WORKSPACE_ID);
+    let root = launcher.active_root().map_err(safe_error)?.filter(|root| root.join("workspace.sqlite3").is_file()).unwrap_or(default_root);
+    Ok((WorkspaceRepository::new(root), launcher))
 }
 
 #[allow(dead_code)]
@@ -90,15 +91,16 @@ fn apply_native_material(_window: &WebviewWindow, _dark: Option<bool>) {}
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
         .setup(|app| {
-            let repository = workspace_repository(&app.handle())?;
+            let (repository, launcher) = workspace_repository(&app.handle())?;
             let secret_store = Arc::new(WindowsCredentialStore::new(CREDENTIAL_SERVICE));
-            reset_legacy_poc_workspace(&repository, &secret_store);
-            let has_workspace = repository.root().join("workspace.json").is_file();
+            let has_workspace = repository.exists();
+            if has_workspace && let Ok(descriptor) = repository.descriptor() { let _ = launcher.register_and_activate(&descriptor); }
             let (control_plane, startup_error) = if has_workspace {
                 match open_control_plane(&repository, &secret_store) {
                     Ok(plane) => (Some(plane), None),
@@ -109,14 +111,14 @@ pub fn run() {
             };
 
             app.manage(DesktopState {
-                inspection_reports: InspectionRepository::new(repository.root()),
+                inspection_reports: ActiveInspectionRepository::new(repository.clone()),
                 probe_runner: ProviderProbeRunner::new(TransportConfig::default()).map_err(
                     |error| {
                         tauri::Error::Setup((Box::new(error) as Box<dyn std::error::Error>).into())
                     },
                 )?,
                 paused_probes: Mutex::new(BTreeSet::new()),
-                repository,
+                repository: ActiveWorkspace::new(repository, launcher),
                 secret_store,
                 control_plane: Mutex::new(control_plane),
                 gateway: Mutex::new(None),
@@ -149,6 +151,8 @@ pub fn run() {
             create_wallet_asset,
             update_wallet_asset,
             delete_wallet_asset,
+            delete_wallet_asset_secret,
+            reveal_wallet_secret,
             wallet_asset_impact,
             probe_wallet_asset,
             direct_endpoints,
@@ -159,6 +163,7 @@ pub fn run() {
             pause_direct_endpoint,
             test_direct_endpoint,
             direct_endpoint_templates,
+            direct_endpoint_live_document,
             project_tree,
             create_project,
             rename_project,
@@ -195,17 +200,25 @@ pub fn run() {
             delete_publisher,
             publisher_preview,
             publisher_templates,
+            canvas_live_document,
+            save_live_document_markdown,
+            save_markdown_document,
             test_publisher_connection,
             set_window_material_theme,
-            workflow_graph,
             workspace_ui_state,
             save_workspace_ui_state,
             validate_workflow_graph,
-            workflow_node_impact,
-            save_workflow_graph,
             audit_records,
             export_workspace,
             import_workspace,
+            workspace_storage_status,
+            workspace_locations,
+            create_workspace_at,
+            open_workspace_at,
+            relocate_workspace,
+            verify_workspace,
+            backup_workspace,
+            compact_workspace,
             initialize_workspace,
             start_publisher,
             pause_publisher,
@@ -213,26 +226,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("API ARRAY 桌面程序无法启动");
-}
-
-fn reset_legacy_poc_workspace(repository: &WorkspaceRepository, store: &WindowsCredentialStore) {
-    let path = repository.root().join("workspace.json");
-    let Ok(text) = fs::read_to_string(&path) else { return; };
-    let Ok(raw) = serde_json::from_str::<Value>(&text) else { return; };
-    if !raw.get("schema_version").and_then(Value::as_u64).is_some_and(|version| version < u64::from(WORKSPACE_SCHEMA_VERSION)) { return; }
-    let mut references = Vec::new();
-    collect_legacy_secret_refs(&raw, &mut references);
-    for reference in references {
-        if let Ok(reference) = SecretRef::parse(reference) { let _ = store.delete(&reference); }
-    }
-    let _ = fs::remove_dir_all(repository.root());
-}
-
-fn collect_legacy_secret_refs(value: &Value, output: &mut Vec<String>) {
-    match value {
-        Value::String(text) if text.starts_with("secret://") => output.push(text.clone()),
-        Value::Array(values) => values.iter().for_each(|value| collect_legacy_secret_refs(value, output)),
-        Value::Object(values) => values.values().for_each(|value| collect_legacy_secret_refs(value, output)),
-        _ => {}
-    }
 }

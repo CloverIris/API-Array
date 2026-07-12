@@ -32,6 +32,79 @@ pub struct CodeTemplate {
     pub code: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeBlock {
+    pub language: TemplateLanguage,
+    pub title: String,
+    pub code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LiveDocumentSection {
+    Paragraph { title: String, body: String },
+    Facts { title: String, items: Vec<LiveDocumentFact> },
+    Steps { title: String, items: Vec<String> },
+    Code { title: String, block: CodeBlock },
+    Note { title: String, body: String, tone: DocumentNoteTone },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDocumentFact {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentNoteTone { Info, Warning, Security }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDocument {
+    pub schema_version: u32,
+    pub title: String,
+    pub summary: String,
+    pub language: TemplateLanguage,
+    pub endpoint_status: String,
+    pub sections: Vec<LiveDocumentSection>,
+    pub markdown: String,
+}
+
+/// Builds a safe, structured document from an endpoint context and one of the
+/// generated language templates. The resulting Markdown never contains a real
+/// credential and can be exported without frontend string assembly.
+pub fn generate_live_document(context: &TemplateContext, language: TemplateLanguage, endpoint_status: &str) -> Result<LiveDocument, CoreError> {
+    let template = generate_templates(context)?.into_iter().find(|item| item.language == language).ok_or_else(|| CoreError::new(ErrorCode::TemplateInvalid, "未找到请求的模板语言"))?;
+    let sections = vec![
+        LiveDocumentSection::Paragraph { title: "用途".to_owned(), body: "通过 API ARRAY 的本地审计入口调用 OpenAI-compatible API。请求会经过鉴权、路由、故障处理与脱敏审计。".to_owned() },
+        LiveDocumentSection::Facts { title: "入口信息".to_owned(), items: vec![LiveDocumentFact { label: "Base URL".to_owned(), value: context.base_url.clone() }, LiveDocumentFact { label: "公开模型".to_owned(), value: context.model.clone() }, LiveDocumentFact { label: "运行状态".to_owned(), value: endpoint_status.to_owned() }, LiveDocumentFact { label: "流式响应".to_owned(), value: if context.stream { "已启用" } else { "当前示例未启用" }.to_owned() }] },
+        LiveDocumentSection::Steps { title: "调用前准备".to_owned(), items: vec![format!("将本地入口 Token 写入环境变量或安全 Secret Store；示例使用占位符 {}。", context.token_placeholder), "确认 API ARRAY 正在运行且目标入口处于启用状态。".to_owned(), "不要把本地 Token 或上游 API Key 写入源码、日志或版本库。".to_owned()] },
+        LiveDocumentSection::Code { title: "快速开始".to_owned(), block: CodeBlock { language: template.language, title: template.title, code: template.code } },
+        LiveDocumentSection::Note { title: "审计与隐私".to_owned(), body: "默认审计只保存模型、状态、延迟、重试、切换和 Token 用量，不保存请求正文、响应正文、Authorization Header 或 Secret。".to_owned(), tone: DocumentNoteTone::Security },
+        LiveDocumentSection::Note { title: "故障排查".to_owned(), body: "遇到 401 时检查本地入口 Token；遇到 502/503 时先在 API 钱包验证上游，再检查 Canvas 编译报告和候选健康状态。".to_owned(), tone: DocumentNoteTone::Info },
+    ];
+    let mut document = LiveDocument { schema_version: 1, title: format!("{} · API ARRAY 活文档", context.model), summary: "本地、可审计的 OpenAI-compatible 调用说明。".to_owned(), language, endpoint_status: endpoint_status.to_owned(), sections, markdown: String::new() };
+    document.markdown = render_live_document_markdown(&document);
+    Ok(document)
+}
+
+#[must_use]
+pub fn render_live_document_markdown(document: &LiveDocument) -> String {
+    let mut output = format!("# {}\n\n{}\n\n", document.title, document.summary);
+    for section in &document.sections {
+        match section {
+            LiveDocumentSection::Paragraph { title, body } => output.push_str(&format!("## {title}\n\n{body}\n\n")),
+            LiveDocumentSection::Facts { title, items } => { output.push_str(&format!("## {title}\n\n")); for item in items { output.push_str(&format!("- **{}**：{}\n", item.label, item.value)); } output.push('\n'); }
+            LiveDocumentSection::Steps { title, items } => { output.push_str(&format!("## {title}\n\n")); for (index, item) in items.iter().enumerate() { output.push_str(&format!("{}. {item}\n", index + 1)); } output.push('\n'); }
+            LiveDocumentSection::Code { title, block } => output.push_str(&format!("## {title}\n\n```{}\n{}\n```\n\n", markdown_language(block.language), block.code)),
+            LiveDocumentSection::Note { title, body, .. } => output.push_str(&format!("## {title}\n\n> {body}\n\n")),
+        }
+    }
+    output
+}
+
+const fn markdown_language(language: TemplateLanguage) -> &'static str { match language { TemplateLanguage::Curl => "bash", TemplateLanguage::Python => "python", TemplateLanguage::JavascriptTypescript => "typescript", TemplateLanguage::Go => "go", TemplateLanguage::Rust => "rust", TemplateLanguage::Java => "java", TemplateLanguage::Csharp => "csharp", TemplateLanguage::Cpp => "cpp" } }
+
 impl TemplateContext {
     /// 校验活文档模板上下文，并拒绝首版不允许的远程地址。
     ///
@@ -268,6 +341,17 @@ mod tests {
                 .iter()
                 .all(|template| template.code.contains("<API_ARRAY_TOKEN>"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn live_document_is_structured_and_markdown_is_deterministic() -> Result<(), CoreError> {
+        let context = TemplateContext { base_url: "http://127.0.0.1:7480/direct/main/v1".to_owned(), model: "smart".to_owned(), stream: false, token_placeholder: "${APIARRAY_DIRECT_MAIN_TOKEN}".to_owned() };
+        let document = generate_live_document(&context, TemplateLanguage::Python, "运行中")?;
+        assert!(document.sections.iter().any(|section| matches!(section, LiveDocumentSection::Code { .. })));
+        assert_eq!(document.markdown, render_live_document_markdown(&document));
+        assert!(document.markdown.contains("```python"));
+        assert!(!document.markdown.to_ascii_lowercase().contains("sk-"));
         Ok(())
     }
 

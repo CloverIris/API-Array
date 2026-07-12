@@ -18,7 +18,7 @@ fn wallet_gallery(state: State<'_, DesktopState>) -> Result<Vec<WalletCard>, Str
 
 fn wallet_cards(state: &DesktopState) -> Result<Vec<WalletCard>, String> {
     let workspace = load_workspace(&state.repository)?;
-    let audit = read_jsonl_audit(audit_path(&state.repository), 2_000).unwrap_or_default();
+    let audit = state.repository.read_audit(2_000).unwrap_or_default();
     let mut cards = builtin_provider_manifests().map_err(|error| error.message)?.into_iter().map(|manifest| WalletCard {
         id: format!("catalog:{}", manifest.provider.id), provider_id: manifest.provider.id, provider_instance_id: None,
         name: manifest.provider.name, endpoint_override: Some(manifest.endpoint.default_base_url), configured: false, enabled: false, source: "catalog".to_owned(), budget_micros: None,
@@ -28,7 +28,7 @@ fn wallet_cards(state: &DesktopState) -> Result<Vec<WalletCard>, String> {
         let provider = workspace.runtime.providers.get(&asset.provider_instance_id);
         let usage = wallet_usage(&audit, &asset.provider_instance_id);
         let direct = workspace.direct_endpoints.values().filter(|endpoint| endpoint.asset_id == asset.id).count();
-        let canvases = workspace.projects.projects.values().flat_map(|project| project.canvases.values()).filter(|canvas| canvas.graph.nodes.iter().any(|node| node.config.get("provider_instance_id").and_then(Value::as_str) == Some(asset.provider_instance_id.as_str()))).count();
+        let canvases = workspace.projects.projects.values().flat_map(|project| project.canvases.values()).filter(|canvas| canvas.graph.nodes.iter().any(|node| node.config.get("asset_id").and_then(Value::as_str) == Some(asset.id.as_str()))).count();
         cards.push(WalletCard { id: asset.id.clone(), provider_id: asset.provider_id.clone(), provider_instance_id: Some(asset.provider_instance_id.clone()), name: asset.name.clone(), endpoint_override: provider.and_then(|item| item.endpoint_override.clone()), configured: provider.is_some_and(|item| !item.secret_refs.is_empty()), enabled: asset.enabled && provider.is_some_and(|item| item.enabled), source: "asset".to_owned(), budget_micros: asset.billing.monthly_budget_micros, currency: asset.billing.currency.clone(), request_count: usage.0, input_tokens: usage.1, output_tokens: usage.2, estimated_cost_micros: None, reference_count: direct + canvases });
     }
     Ok(cards)
@@ -129,8 +129,8 @@ async fn update_wallet_asset(input: UpdateWalletAssetInput, state: State<'_, Des
 #[tauri::command]
 fn wallet_asset_impact(asset_id: String, state: State<'_, DesktopState>) -> Result<WalletAssetImpact, String> {
     let workspace = load_workspace(&state.repository)?;
-    let asset = workspace.wallet.assets.get(&asset_id).ok_or_else(|| "API 钱包资产不存在。".to_owned())?;
-    Ok(WalletAssetImpact { direct_endpoints: workspace.direct_endpoints.values().filter(|endpoint| endpoint.asset_id == asset_id).map(|endpoint| endpoint.name.clone()).collect(), canvases: workspace.projects.projects.values().flat_map(|project| project.canvases.values()).filter(|canvas| canvas.graph.nodes.iter().any(|node| node.config.get("provider_instance_id").and_then(Value::as_str) == Some(asset.provider_instance_id.as_str()))).map(|canvas| canvas.name.clone()).collect() })
+    workspace.wallet.assets.get(&asset_id).ok_or_else(|| "API 钱包资产不存在。".to_owned())?;
+    Ok(WalletAssetImpact { direct_endpoints: workspace.direct_endpoints.values().filter(|endpoint| endpoint.asset_id == asset_id).map(|endpoint| endpoint.name.clone()).collect(), canvases: workspace.projects.projects.values().flat_map(|project| project.canvases.values()).filter(|canvas| canvas.graph.nodes.iter().any(|node| node.config.get("asset_id").and_then(Value::as_str) == Some(asset_id.as_str()))).map(|canvas| canvas.name.clone()).collect() })
 }
 
 #[tauri::command]
@@ -143,6 +143,44 @@ async fn delete_wallet_asset(asset_id: String, state: State<'_, DesktopState>) -
 }
 
 #[tauri::command]
+async fn delete_wallet_asset_secret(asset_id: String, state: State<'_, DesktopState>) -> Result<Vec<WalletCard>, String> {
+    let mut workspace = load_workspace(&state.repository)?;
+    let asset = workspace.wallet.assets.get(&asset_id).ok_or_else(|| "API 钱包资产不存在。".to_owned())?;
+    let provider = workspace.runtime.providers.get_mut(&asset.provider_instance_id).ok_or_else(|| "Provider 实例不存在。".to_owned())?;
+    for reference in provider.secret_refs.values() { let _ = state.secret_store.delete(reference); }
+    provider.secret_refs.clear();
+    state.repository.save(&workspace).map_err(safe_error)?;
+    reload_control_plane(&state).await?;
+    restart_gateway(&state).await?;
+    wallet_cards(&state)
+}
+
+#[tauri::command]
+async fn reveal_wallet_secret(asset_id: String, app: AppHandle, state: State<'_, DesktopState>) -> Result<SecretRevealResult, String> {
+    let window = app.get_webview_window("main").ok_or_else(|| "无法定位主窗口。".to_owned())?;
+    #[cfg(windows)]
+    let hwnd = window.hwnd().map_err(|_| "无法取得 Windows 主窗口句柄。".to_owned())?.0 as isize;
+    #[cfg(not(windows))]
+    let hwnd = 0_isize;
+    let consent = tauri::async_runtime::spawn_blocking(move || apiarray_windows_security::verify_for_window(hwnd, "查看 API ARRAY 中保存的 API Key")).await.map_err(|_| "Windows Hello 验证任务无法启动。".to_owned())?.map_err(|_| "当前系统不支持 HWND 绑定的 Windows Hello 验证；Windows 10 仅允许替换或删除 Key。".to_owned())?;
+    use apiarray_windows_security::ConsentResult;
+    match consent {
+        ConsentResult::Verified => {}
+        ConsentResult::Canceled => return Err("已取消 Windows Hello 验证。".to_owned()),
+        ConsentResult::NotConfigured => return Err("当前用户尚未配置 Windows Hello PIN 或生物识别。".to_owned()),
+        ConsentResult::DisabledByPolicy => return Err("Windows Hello 已被系统策略禁用。".to_owned()),
+        ConsentResult::RetriesExhausted => return Err("Windows Hello 验证重试次数已耗尽。".to_owned()),
+        ConsentResult::DeviceUnavailable => return Err("Windows Hello 验证设备当前不可用。".to_owned()),
+    }
+    let workspace = load_workspace(&state.repository)?;
+    let asset = workspace.wallet.assets.get(&asset_id).ok_or_else(|| "API 钱包资产不存在。".to_owned())?;
+    let provider = workspace.runtime.providers.get(&asset.provider_instance_id).ok_or_else(|| "Provider 实例不存在。".to_owned())?;
+    let reference = provider.secret_refs.values().next().ok_or_else(|| "该资产尚未绑定 Key。".to_owned())?;
+    let value = state.secret_store.get(reference).map_err(safe_error)?;
+    Ok(SecretRevealResult { value: value.expose().to_owned(), expires_in_ms: 30_000, protection: "windows_hello".to_owned() })
+}
+
+#[tauri::command]
 async fn probe_wallet_asset(asset_id: String, state: State<'_, DesktopState>) -> Result<apiarray_core::inspection::InspectionReport, String> {
     let workspace = load_workspace(&state.repository)?; let asset = workspace.wallet.assets.get(&asset_id).ok_or_else(|| "API 钱包资产不存在。".to_owned())?; let instance = workspace.runtime.providers.get(&asset.provider_instance_id).cloned().ok_or_else(|| "Provider 实例不存在。".to_owned())?;
     let resolver = StoreSecretResolver::new(state.secret_store.clone()); let report = state.probe_runner.run(&instance, &resolver, false).await.map_err(safe_error)?; state.inspection_reports.save(&report).map_err(safe_error)?; Ok(report)
@@ -152,7 +190,7 @@ async fn probe_wallet_asset(asset_id: String, state: State<'_, DesktopState>) ->
 fn direct_endpoints(state: State<'_, DesktopState>) -> Result<Vec<DirectEndpointItem>, String> { direct_endpoint_items(&state) }
 
 fn direct_endpoint_items(state: &DesktopState) -> Result<Vec<DirectEndpointItem>, String> {
-    let workspace = load_workspace(&state.repository)?; let audit = read_jsonl_audit(audit_path(&state.repository), 2_000).unwrap_or_default();
+    let workspace = load_workspace(&state.repository)?; let audit = state.repository.read_audit(2_000).unwrap_or_default();
     Ok(workspace.direct_endpoints.values().map(|endpoint| DirectEndpointItem { id: endpoint.id.clone(), name: endpoint.name.clone(), alias: endpoint.alias.clone(), asset_id: endpoint.asset_id.clone(), asset_name: workspace.wallet.assets.get(&endpoint.asset_id).map_or_else(|| "Unknown asset".to_owned(), |asset| asset.name.clone()), enabled: endpoint.enabled, token_configured: state.secret_store.contains(&endpoint.token_ref), base_url: direct_endpoint_url(&workspace, &endpoint.alias), public_models: endpoint.models.iter().map(|mapping| mapping.public_model.clone()).collect(), request_count: audit.iter().filter(|trace| trace.publisher_id == format!("direct:{}", endpoint.id)).count() as u64 }).collect())
 }
 
@@ -193,6 +231,18 @@ fn direct_endpoint_templates(endpoint_id: String, state: State<'_, DesktopState>
         stream: false,
         token_placeholder: format!("${{APIARRAY_DIRECT_{}_TOKEN}}", endpoint.alias.to_ascii_uppercase().replace('-', "_")),
     }).map_err(|error| error.message)
+}
+
+#[tauri::command]
+fn direct_endpoint_live_document(endpoint_id: String, language: TemplateLanguage, state: State<'_, DesktopState>) -> Result<LiveDocument, String> {
+    let workspace = load_workspace(&state.repository)?;
+    let endpoint = workspace.direct_endpoints.get(&endpoint_id).ok_or_else(|| "审计直出端点不存在。".to_owned())?;
+    generate_live_document(&TemplateContext {
+        base_url: direct_endpoint_url(&workspace, &endpoint.alias),
+        model: endpoint.models.first().map_or_else(|| "default".to_owned(), |mapping| mapping.public_model.clone()),
+        stream: false,
+        token_placeholder: format!("${{APIARRAY_DIRECT_{}_TOKEN}}", endpoint.alias.to_ascii_uppercase().replace('-', "_")),
+    }, language, if endpoint.enabled { "运行中" } else { "已暂停" }).map_err(|error| error.message)
 }
 
 #[tauri::command]
@@ -365,7 +415,6 @@ async fn create_canvas(
         draft_revision: 1,
         applied_revision: 0,
         publisher_id: None,
-        legacy_multi_output: false,
     };
     project.canvases.insert(id.clone(), canvas);
     if let Some(folder_id) = folder_id {
@@ -471,7 +520,6 @@ async fn duplicate_canvas(
         draft_revision: 1,
         applied_revision: 0,
         publisher_id: None,
-        legacy_multi_output: source.legacy_multi_output,
     };
     project.canvases.insert(id.clone(), copy);
     if let Some(folder_id) = source.folder_id
@@ -513,13 +561,13 @@ async fn canvas_snapshot(
         .get(&input.canvas_id)
         .cloned()
         .ok_or_else(|| "Canvas not found".to_owned())?;
-    let provider_instance_ids = canvas
+    let asset_ids = canvas
         .graph
         .nodes
         .iter()
         .filter_map(|node| {
             node.config
-                .get("provider_instance_id")
+                .get("asset_id")
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
@@ -528,9 +576,10 @@ async fn canvas_snapshot(
         .collect::<Vec<_>>();
     let secret_status =
         workspace.secret_status(&available_secret_refs(&workspace, &state.secret_store));
-    let missing_secret_count = provider_instance_ids
+    let missing_secret_count = asset_ids
         .iter()
-        .filter_map(|id| workspace.runtime.providers.get(id))
+        .filter_map(|id| workspace.wallet.assets.get(id))
+        .filter_map(|asset| workspace.runtime.providers.get(&asset.provider_instance_id))
         .flat_map(|provider| provider.secret_refs.values())
         .filter(|reference| secret_status.missing.contains(reference.as_str()))
         .count();
@@ -567,7 +616,7 @@ async fn canvas_snapshot(
         project_name: project.name.clone(),
         canvas,
         publisher,
-        provider_instance_ids,
+        asset_ids,
         missing_secret_count,
     })
 }
@@ -676,7 +725,7 @@ async fn commit_wallet_placement(
         .ok_or_else(|| "Canvas not found".to_owned())?;
     let base = format!("{}-group", asset.id);
     let node_id = unique_node_id(&canvas.graph, &base);
-    canvas.graph.nodes.push(Node { id: node_id.clone(), name: asset.name, kind: NodeKind::Provider, enabled: true, inputs: vec![], outputs: vec![Port { id: "candidate_out".to_owned(), data_type: PortType::Candidate }], config: serde_json::json!({"asset_id": asset.id, "provider_instance_id": asset.provider_instance_id, "upstream_model": "default", "public_model": "default", "priority": 0}) });
+    canvas.graph.nodes.push(Node { id: node_id.clone(), name: asset.name, kind: NodeKind::Provider, enabled: true, inputs: vec![], outputs: vec![Port { id: "candidate_out".to_owned(), data_type: PortType::Candidate }], config: serde_json::json!({"asset_id": asset.id, "upstream_model": "default", "public_model": "default", "priority": 0}) });
     let composer = canvas
         .graph
         .nodes

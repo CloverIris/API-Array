@@ -18,6 +18,7 @@
     "@openai/apps-sdk-ui": "0.2.2",
     "@tauri-apps/api": "2.11.1",
     "@tauri-apps/plugin-autostart": "2.5.1",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@xyflow/react": "12.11.2",
     "next": "16.2.10",
     "react": "19.2.0",

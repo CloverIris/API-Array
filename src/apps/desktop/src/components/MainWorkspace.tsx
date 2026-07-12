@@ -4,7 +4,6 @@ import { CanvasWorkspace } from "./canvas/CanvasWorkspace";
 import type { SelectedWorkflowItem } from "./workflow/WorkflowInspector";
 import { NotificationsPage, RunsPage, SettingsPage, TemplatesPage } from "./pages/BasicPages";
 import { CompositionsPage } from "./pages/CompositionsPage";
-import { GlobalOverview } from "./pages/GlobalOverview";
 import { DirectEndpointsPage } from "./pages/PublishersPage";
 import { WalletStation } from "./pages/WalletStation";
 

@@ -12,13 +12,13 @@ where
     action(plane).await.map_err(safe_error)
 }
 
-fn load_workspace(repository: &WorkspaceRepository) -> Result<WorkspacePackage, String> {
-    match repository.load().map_err(safe_error)?.loaded {
-        WorkspaceLoad::Ready { workspace } => Ok(*workspace),
-        WorkspaceLoad::ReadOnly { reason, .. } => {
-            Err(format!("工作区只能以只读模式打开：{reason}"))
-        }
-    }
+trait RepositoryAccess { fn active_repository(&self) -> WorkspaceRepository; }
+impl RepositoryAccess for WorkspaceRepository { fn active_repository(&self) -> WorkspaceRepository { self.clone() } }
+impl RepositoryAccess for ActiveWorkspace { fn active_repository(&self) -> WorkspaceRepository { self.current() } }
+
+fn load_workspace(repository: &impl RepositoryAccess) -> Result<WorkspacePackage, String> {
+    let WorkspaceLoad::Ready { workspace } = repository.active_repository().load().map_err(safe_error)?.loaded;
+    Ok(*workspace)
 }
 
 async fn reload_control_plane(state: &DesktopState) -> Result<(), String> {
@@ -87,12 +87,6 @@ fn empty_workspace(name: &str) -> WorkspacePackage {
             publishers: BTreeMap::new(),
         },
         runtime_state: WorkspaceRuntimeState::default(),
-        graph: WorkflowGraph {
-            schema_version: GRAPH_SCHEMA_VERSION,
-            id: "main".to_owned(),
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        },
         wallet: ApiWallet::default(),
         direct_endpoints: BTreeMap::new(),
         gateway: apiarray_core::workspace::DirectGateway::default(),
@@ -117,7 +111,6 @@ fn default_projects() -> WorkspaceProjects {
         draft_revision: 1,
         applied_revision: 0,
         publisher_id: None,
-        legacy_multi_output: false,
     };
     let project = Project {
         id: "default".to_owned(),
@@ -157,7 +150,8 @@ async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
     }
 }
 
-fn gateway_entries(workspace: &WorkspacePackage, repository: &WorkspaceRepository, store: &Arc<WindowsCredentialStore>) -> Result<Vec<apiarray_runtime::gateway::GatewayEntry>, String> {
+fn gateway_entries(workspace: &WorkspacePackage, repository: &impl RepositoryAccess, store: &Arc<WindowsCredentialStore>) -> Result<Vec<apiarray_runtime::gateway::GatewayEntry>, String> {
+    let repository = repository.active_repository();
     let mut runtime = workspace.runtime.clone();
     let mut prefixes = Vec::new();
     for endpoint in workspace.direct_endpoints.values().filter(|endpoint| endpoint.enabled) {
@@ -179,7 +173,7 @@ fn gateway_entries(workspace: &WorkspacePackage, repository: &WorkspaceRepositor
         }
     }
     let compiled = Arc::new(runtime.compile().map_err(|error| error.message)?);
-    let audit: Arc<dyn apiarray_runtime::resilience::AuditSink> = Arc::new(JsonlAuditSink::open(audit_path(repository)).map_err(safe_error)?);
+    let audit: Arc<dyn apiarray_runtime::resilience::AuditSink> = Arc::new(SqliteAuditSink::new(repository));
     let resolver: Arc<dyn apiarray_runtime::secret::SecretResolver> = Arc::new(StoreSecretResolver::new(store.clone()));
     let transport = apiarray_runtime::transport::HttpExecutor::new(TransportConfig::default()).map_err(safe_error)?;
     Ok(prefixes.into_iter().map(|(prefix, publisher_id)| apiarray_runtime::gateway::GatewayEntry { prefix, state: apiarray_runtime::publisher::PublisherState::with_audit(Arc::clone(&compiled), publisher_id, transport.clone(), Arc::clone(&resolver), Arc::clone(&audit)) }).collect())
@@ -338,10 +332,6 @@ async fn save_projects_workspace(
     })
 }
 
-fn audit_path(repository: &WorkspaceRepository) -> PathBuf {
-    repository.root().join("audit.jsonl")
-}
-
 fn wallet_usage(records: &[ExecutionTrace], provider_instance_id: &str) -> (u64, u64, u64) {
     records
         .iter()
@@ -374,13 +364,12 @@ fn available_secret_refs(
 }
 
 fn open_control_plane(
-    repository: &WorkspaceRepository,
+    repository: &impl RepositoryAccess,
     secret_store: &Arc<WindowsCredentialStore>,
 ) -> Result<ControlPlane, apiarray_runtime::RuntimeError> {
-    let audit = JsonlAuditSink::open(audit_path(repository))
-        .ok()
-        .map(|sink| Arc::new(sink) as Arc<dyn apiarray_runtime::resilience::AuditSink>);
-    ControlPlane::open(repository.clone(), secret_store.clone(), audit)
+    let repository = repository.active_repository();
+    let audit = Some(Arc::new(SqliteAuditSink::new(repository.clone())) as Arc<dyn apiarray_runtime::resilience::AuditSink>);
+    ControlPlane::open(repository, secret_store.clone(), audit)
 }
 
 fn to_desktop_control_snapshot(

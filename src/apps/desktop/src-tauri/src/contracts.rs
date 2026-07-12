@@ -15,6 +15,31 @@ struct PublisherConnectionTest {
     safe_summary: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveDocumentExportInput {
+    subject_type: String,
+    subject_id: String,
+    language: TemplateLanguage,
+    filename: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MarkdownContentExportInput { filename: String, markdown: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspacePathInput { root: String }
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWorkspaceAtInput { root: String, name: String }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SecretRevealResult { value: String, expires_in_ms: u64, protection: String }
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopSnapshot {
@@ -370,7 +395,7 @@ struct CanvasSnapshot {
     project_name: String,
     canvas: Canvas,
     publisher: Option<CanvasPublisherSnapshot>,
-    provider_instance_ids: Vec<String>,
+    asset_ids: Vec<String>,
     missing_secret_count: usize,
 }
 

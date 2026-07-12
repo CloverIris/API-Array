@@ -178,7 +178,7 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
     snapshotHistory();
     const model = newWorkflowNode("provider", nodes.length);
     model.name = asset.name;
-    model.config = { asset_id: asset.id, provider_instance_id: asset.providerInstanceId, upstream_model: "default", public_model: "default", secret_ready: asset.configured };
+    model.config = { asset_id: asset.id, upstream_model: "default", public_model: "default", priority: 0 };
     const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
     const composer = nodes.find((node) => node.data.model.kind === "composer");
     setNodes((current) => [...current, { id: model.id, type: "apiArray", position, data: { model }, ariaLabel: `钱包 Provider：${asset.name}` }]);
@@ -193,7 +193,7 @@ function WorkflowCanvasInner({ projectId, canvasId, wallet, uiState, publisherRu
     if (usable.length < required) { setLocalError(`该模板至少需要 ${required} 个钱包资产。`); return; }
     snapshotHistory();
     const publisher = nodes.find((node) => node.data.model.kind === "publisher")?.data.model ?? newWorkflowNode("publisher", 0);
-    const providers = usable.slice(0, required).map((asset, index) => { const node = newWorkflowNode("provider", index + 1); node.name = asset.name; node.config = { asset_id: asset.id, provider_instance_id: asset.providerInstanceId, upstream_model: "default", public_model: template === "single" ? "default" : `model-${index + 1}`, priority: index, secret_ready: asset.configured }; return node; });
+    const providers = usable.slice(0, required).map((asset, index) => { const node = newWorkflowNode("provider", index + 1); node.name = asset.name; node.config = { asset_id: asset.id, upstream_model: "default", public_model: template === "single" ? "default" : `model-${index + 1}`, priority: index }; return node; });
     const composer = newWorkflowNode("composer", required + 1); composer.config = { strategy: "priority_failover", timeout_ms: 30000, max_retries: 2, allow_capability_degradation: false };
     const extra = template === "guarded" ? [newWorkflowNode("probe", required + 2), newWorkflowNode("middleware", required + 3)] : [];
     if (extra[0]) extra[0].config = { safe_only: true, interval_seconds: 300, failure_threshold: 3 };

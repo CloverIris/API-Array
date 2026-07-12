@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    fs,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -16,7 +15,7 @@ use apiarray_core::{
     routing::{RoutePolicy, StandardError},
     runtime::{ModelRoute, ProviderInstance, RuntimeConfig, RuntimePublisher, UpstreamRoute},
     secret::SecretRef,
-    templates::{CodeTemplate, TemplateContext, generate_templates},
+    templates::{CodeTemplate, LiveDocument, TemplateContext, TemplateLanguage, generate_live_document, generate_templates},
     workspace::{
         ApiAsset, ApiWallet, BillingPolicy, Canvas, DirectEndpoint, DirectModelMapping, Project, ProjectFolder,
         WORKSPACE_SCHEMA_VERSION, WorkspaceLoad, WorkspacePackage, WorkspaceProjects,
@@ -26,8 +25,8 @@ use apiarray_core::{
 use apiarray_runtime::{
     control::{ControlPlane, ControlPlaneSnapshot},
     inspection::{InspectionRepository, ProviderProbeRunner},
-    persistence::WorkspaceRepository,
-    resilience::{ExecutionTrace, JsonlAuditSink, read_jsonl_audit},
+    persistence::{WorkspaceBackup, WorkspaceHealth, WorkspaceLocation, WorkspaceRepository},
+    resilience::{ExecutionTrace, SqliteAuditSink},
     secret::{SecretStore, SecretValue, StoreSecretResolver, WindowsCredentialStore},
     supervisor::PublisherLifecycle,
     transport::TransportConfig,
@@ -75,10 +74,9 @@ include!("host.rs");
 mod tests {
     use super::{
         ShellUiState, WorkspaceUiState, empty_workspace, model_count_from_payload,
-        new_canvas_graph, read_ui_state, sanitize_ui_state, workspace_name, NodeKind,
+        new_canvas_graph, read_ui_state, sanitize_ui_state, workspace_name, NodeKind, UI_STATE_KEY,
     };
     use apiarray_runtime::persistence::WorkspaceRepository;
-    use std::fs;
 
     #[test]
     fn creates_an_empty_workspace_without_publishers_or_providers() {
@@ -87,7 +85,7 @@ mod tests {
         assert_eq!(workspace.name, "桌面工作区");
         assert!(workspace.runtime.providers.is_empty());
         assert!(workspace.runtime.publishers.is_empty());
-        assert!(workspace.graph.nodes.is_empty());
+        assert!(workspace.projects.projects.contains_key("default"));
     }
 
     #[test]
@@ -148,13 +146,12 @@ mod tests {
     #[test]
     fn corrupted_ui_state_falls_back_without_blocking_workspace() {
         let root = std::env::temp_dir().join(format!("apiarray-ui-state-{}", std::process::id()));
-        fs::create_dir_all(&root).expect("temporary directory is writable");
-        fs::write(root.join("ui-state.json"), b"{not-json").expect("corrupted fixture is written");
         let repository = WorkspaceRepository::new(&root);
+        repository.write_setting(UI_STATE_KEY, "{not-json").expect("corrupted fixture is written");
 
         assert_eq!(read_ui_state(&repository), WorkspaceUiState::default());
 
-        fs::remove_dir_all(root).expect("temporary directory is removed");
+        std::fs::remove_dir_all(root).expect("temporary directory is removed");
     }
 
     #[test]

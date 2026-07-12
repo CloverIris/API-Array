@@ -16,12 +16,14 @@ path = "src/main.rs"
 [dependencies]
 apiarray-core = { path = "../../../crates/apiarray-core" }
 apiarray-runtime = { path = "../../../crates/apiarray-runtime" }
+apiarray-windows-security = { path = "../../../crates/apiarray-windows-security" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-window-state = "2"
+tauri-plugin-dialog = "2"
 tokio = { workspace = true }
 window-vibrancy = "0.7.1"
 

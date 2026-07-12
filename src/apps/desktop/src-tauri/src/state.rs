@@ -1,18 +1,45 @@
 const CREDENTIAL_SERVICE: &str = "API ARRAY";
 const DEFAULT_WORKSPACE_ID: &str = "default";
-const UI_STATE_FILE: &str = "ui-state.json";
+const UI_STATE_KEY: &str = "desktop.ui_state";
 const UI_STATE_SCHEMA_VERSION: u32 = 4;
 
 struct DesktopState {
-    repository: WorkspaceRepository,
+    repository: ActiveWorkspace,
     secret_store: Arc<WindowsCredentialStore>,
     probe_runner: ProviderProbeRunner,
-    inspection_reports: InspectionRepository,
+    inspection_reports: ActiveInspectionRepository,
     paused_probes: Mutex<BTreeSet<String>>,
     control_plane: Mutex<Option<ControlPlane>>,
     gateway: Mutex<Option<apiarray_runtime::gateway::LocalGateway>>,
     gateway_error: Mutex<Option<String>>,
     startup_error: Mutex<Option<String>>,
+}
+
+struct ActiveInspectionRepository { current: std::sync::RwLock<InspectionRepository> }
+impl ActiveInspectionRepository {
+    fn new(repository: WorkspaceRepository) -> Self { Self { current: std::sync::RwLock::new(InspectionRepository::from_repository(repository)) } }
+    fn switch_to(&self, repository: WorkspaceRepository) -> Result<(), String> { *self.current.write().map_err(|_| "无法切换体检报告存储。".to_owned())? = InspectionRepository::from_repository(repository); Ok(()) }
+    fn save(&self, report: &apiarray_core::inspection::InspectionReport) -> Result<(), apiarray_runtime::RuntimeError> { self.current.read().map_err(|_| apiarray_runtime::RuntimeError::new(apiarray_runtime::RuntimeErrorCode::WorkspaceStorageUnavailable, "体检报告存储不可用"))?.save(report) }
+    fn load(&self, provider_id: &str) -> Result<Option<apiarray_core::inspection::InspectionReport>, apiarray_runtime::RuntimeError> { self.current.read().map_err(|_| apiarray_runtime::RuntimeError::new(apiarray_runtime::RuntimeErrorCode::WorkspaceStorageUnavailable, "体检报告存储不可用"))?.load(provider_id) }
+}
+
+struct ActiveWorkspace {
+    current: std::sync::RwLock<WorkspaceRepository>,
+    launcher: apiarray_runtime::persistence::LauncherRepository,
+}
+
+impl ActiveWorkspace {
+    fn new(repository: WorkspaceRepository, launcher: apiarray_runtime::persistence::LauncherRepository) -> Self { Self { current: std::sync::RwLock::new(repository), launcher } }
+    fn current(&self) -> WorkspaceRepository { self.current.read().expect("active workspace lock poisoned").clone() }
+    fn switch_to(&self, repository: WorkspaceRepository) -> Result<(), String> { let descriptor = repository.descriptor().map_err(safe_error)?; self.launcher.register_and_activate(&descriptor).map_err(safe_error)?; *self.current.write().map_err(|_| "无法切换活动工作区。".to_owned())? = repository; Ok(()) }
+    fn locations(&self) -> Result<Vec<apiarray_runtime::persistence::WorkspaceLocation>, String> { self.launcher.locations().map_err(safe_error) }
+    fn root(&self) -> PathBuf { self.current().root().to_path_buf() }
+    fn save(&self, workspace: &WorkspacePackage) -> Result<(), apiarray_runtime::RuntimeError> { self.current().save(workspace) }
+    fn health(&self) -> Result<WorkspaceHealth, apiarray_runtime::RuntimeError> { self.current().health() }
+    fn backup(&self) -> Result<WorkspaceBackup, apiarray_runtime::RuntimeError> { self.current().backup() }
+    fn compact(&self) -> Result<(), apiarray_runtime::RuntimeError> { self.current().compact() }
+    fn write_setting(&self, key: &str, value: &str) -> Result<(), apiarray_runtime::RuntimeError> { self.current().write_setting(key, value) }
+    fn read_audit(&self, limit: usize) -> Result<Vec<ExecutionTrace>, apiarray_runtime::RuntimeError> { self.current().read_audit(limit) }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

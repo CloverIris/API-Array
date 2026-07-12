@@ -134,6 +134,48 @@ fn publisher_templates(
 }
 
 #[tauri::command]
+fn canvas_live_document(publisher_id: String, language: TemplateLanguage, state: State<'_, DesktopState>) -> Result<LiveDocument, String> {
+    let workspace = load_workspace(&state.repository)?;
+    let publisher = workspace.runtime.publishers.get(&publisher_id).ok_or_else(|| "Publisher 不存在。".to_owned())?;
+    let summary = publisher.config.validate().map_err(|error| error.message)?;
+    let status = if workspace.runtime_state.enabled_publishers.contains(&publisher_id) { "运行中" } else { "已停止" };
+    generate_live_document(&TemplateContext { base_url: summary.base_url, model: publisher.routes.first().map(|route| route.public_model.clone()).unwrap_or_else(|| "default".to_owned()), stream: false, token_placeholder: "${APIARRAY_PUBLISHER_TOKEN}".to_owned() }, language, status).map_err(|error| error.message)
+}
+
+#[tauri::command]
+fn save_live_document_markdown(input: LiveDocumentExportInput, state: State<'_, DesktopState>) -> Result<String, String> {
+    let workspace = load_workspace(&state.repository)?;
+    let document = match input.subject_type.as_str() {
+        "direct" => {
+            let endpoint = workspace.direct_endpoints.get(&input.subject_id).ok_or_else(|| "审计直出端点不存在。".to_owned())?;
+            generate_live_document(&TemplateContext { base_url: direct_endpoint_url(&workspace, &endpoint.alias), model: endpoint.models.first().map_or_else(|| "default".to_owned(), |mapping| mapping.public_model.clone()), stream: false, token_placeholder: format!("${{APIARRAY_DIRECT_{}_TOKEN}}", endpoint.alias.to_ascii_uppercase().replace('-', "_")) }, input.language, if endpoint.enabled { "运行中" } else { "已暂停" }).map_err(|error| error.message)?
+        }
+        "canvas" => {
+            let publisher = workspace.runtime.publishers.get(&input.subject_id).ok_or_else(|| "Publisher 不存在。".to_owned())?;
+            let summary = publisher.config.validate().map_err(|error| error.message)?;
+            generate_live_document(&TemplateContext { base_url: summary.base_url, model: publisher.routes.first().map(|route| route.public_model.clone()).unwrap_or_else(|| "default".to_owned()), stream: false, token_placeholder: "${APIARRAY_PUBLISHER_TOKEN}".to_owned() }, input.language, if workspace.runtime_state.enabled_publishers.contains(&input.subject_id) { "运行中" } else { "已停止" }).map_err(|error| error.message)?
+        }
+        _ => return Err("不支持的活文档主体。".to_owned()),
+    };
+    let stem = input.filename.trim().trim_end_matches(".md");
+    if stem.is_empty() || stem.len() > 80 || !stem.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | ' ')) { return Err("Markdown 文件名只能包含字母、数字、空格、短横线和下划线。".to_owned()); }
+    let directory = state.repository.root().join("exports");
+    std::fs::create_dir_all(&directory).map_err(|_| "无法创建活文档导出目录。".to_owned())?;
+    let path = directory.join(format!("{stem}.md"));
+    std::fs::write(&path, document.markdown.as_bytes()).map_err(|_| "无法写入 Markdown 文档。".to_owned())?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn save_markdown_document(input: MarkdownContentExportInput, state: State<'_, DesktopState>) -> Result<String, String> {
+    if input.markdown.is_empty() || input.markdown.len() > 1_000_000 { return Err("Markdown 文档为空或超过 1 MB。".to_owned()); }
+    let stem = input.filename.trim().trim_end_matches(".md");
+    if stem.is_empty() || stem.len() > 80 || !stem.chars().all(|character| character.is_alphanumeric() || matches!(character, '-' | '_' | ' ' | '·')) { return Err("Markdown 文件名包含不安全字符。".to_owned()); }
+    let directory = state.repository.root().join("exports"); std::fs::create_dir_all(&directory).map_err(|_| "无法创建导出目录。".to_owned())?;
+    let path = directory.join(format!("{stem}.md")); std::fs::write(&path, input.markdown.as_bytes()).map_err(|_| "无法写入 Markdown 文档。".to_owned())?; Ok(path.display().to_string())
+}
+
+#[tauri::command]
 async fn test_publisher_connection(
     publisher_id: String,
     state: State<'_, DesktopState>,

@@ -100,6 +100,20 @@ pub struct JsonlAuditSink {
     sender: SyncSender<ExecutionTrace>,
 }
 
+#[derive(Clone)]
+pub struct SqliteAuditSink {
+    repository: crate::persistence::WorkspaceRepository,
+}
+
+impl SqliteAuditSink {
+    #[must_use]
+    pub fn new(repository: crate::persistence::WorkspaceRepository) -> Self { Self { repository } }
+}
+
+impl AuditSink for SqliteAuditSink {
+    fn record(&self, trace: &ExecutionTrace) -> Result<(), RuntimeError> { self.repository.record_audit(trace) }
+}
+
 impl JsonlAuditSink {
     /// 打开只追加的本地 JSONL 审计文件。
     ///

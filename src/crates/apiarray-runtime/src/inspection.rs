@@ -5,11 +5,11 @@ use apiarray_core::{
     provider::{AuthenticationType, DiscoveryKind, ProviderManifest},
     runtime::ProviderInstance,
 };
-use crate::{RuntimeError, RuntimeErrorCode};
+use crate::RuntimeError;
 use crate::secret::SecretResolver;
 use crate::transport::{HttpExecutor, TransportConfig};
 use serde_json::Value;
-use std::{fs, path::{Path, PathBuf}, time::{Instant, SystemTime, UNIX_EPOCH}};
+use std::{path::Path, time::{Instant, SystemTime, UNIX_EPOCH}};
 
 #[derive(Clone)]
 pub struct ProviderProbeRunner {
@@ -181,27 +181,19 @@ fn unsupported(dimension: InspectionDimension, summary: &str) -> InspectionFindi
 fn unix_millis() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)) }
 
 #[derive(Debug, Clone)]
-pub struct InspectionRepository { root: PathBuf }
+pub struct InspectionRepository { repository: crate::persistence::WorkspaceRepository }
 
 impl InspectionRepository {
-    pub fn new(root: impl AsRef<Path>) -> Self { Self { root: root.as_ref().join("inspections") } }
+    pub fn new(root: impl AsRef<Path>) -> Self { Self { repository: crate::persistence::WorkspaceRepository::new(root.as_ref()) } }
+    #[must_use]
+    pub fn from_repository(repository: crate::persistence::WorkspaceRepository) -> Self { Self { repository } }
     pub fn save(&self, report: &InspectionReport) -> Result<(), RuntimeError> {
-        fs::create_dir_all(&self.root).map_err(|_| RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "无法创建体检报告目录"))?;
-        let path = self.root.join(format!("{}.json", safe_filename(&report.provider_id)));
-        let temp = path.with_extension("json.tmp");
-        let bytes = serde_json::to_vec_pretty(report).map_err(|_| RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "体检报告无法序列化"))?;
-        fs::write(&temp, bytes).map_err(|_| RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "体检报告无法写入"))?;
-        fs::rename(temp, path).map_err(|_| RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "体检报告无法提交"))
+        self.repository.save_inspection(report)
     }
     pub fn load(&self, provider_id: &str) -> Result<Option<InspectionReport>, RuntimeError> {
-        let path = self.root.join(format!("{}.json", safe_filename(provider_id)));
-        if !path.is_file() { return Ok(None); }
-        let bytes = fs::read(path).map_err(|_| RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "体检报告无法读取"))?;
-        serde_json::from_slice(&bytes).map(Some).map_err(|_| RuntimeError::new(RuntimeErrorCode::WorkspaceStorageUnavailable, "体检报告格式无效"))
+        self.repository.load_inspection(provider_id)
     }
 }
-
-fn safe_filename(value: &str) -> String { value.chars().map(|character| if character.is_ascii_alphanumeric() || character == '-' || character == '_' { character } else { '_' }).collect() }
 
 #[cfg(test)]
 mod tests {
@@ -230,7 +222,7 @@ mod tests {
         repository.save(&report)?;
         let loaded = repository.load("provider/with spaces")?.expect("saved report");
         assert_eq!(loaded.provider_id, report.provider_id);
-        let _ = fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(root);
         Ok(())
     }
 }

@@ -1,9 +1,4 @@
 #[tauri::command]
-fn workflow_graph(state: State<'_, DesktopState>) -> Result<WorkflowGraph, String> {
-    Ok(load_workspace(&state.repository)?.graph)
-}
-
-#[tauri::command]
 fn workspace_ui_state(state: State<'_, DesktopState>) -> WorkspaceUiState {
     read_ui_state(&state.repository)
 }
@@ -14,12 +9,9 @@ fn save_workspace_ui_state(
     state: State<'_, DesktopState>,
 ) -> Result<WorkspaceUiState, String> {
     sanitize_ui_state(&mut ui_state)?;
-    let path = state.repository.root().join(UI_STATE_FILE);
-    fs::create_dir_all(state.repository.root())
-        .map_err(|error| format!("无法创建 UI 状态目录：{error}"))?;
-    let bytes = serde_json::to_vec_pretty(&ui_state)
+    let value = serde_json::to_string(&ui_state)
         .map_err(|error| format!("无法序列化 UI 状态：{error}"))?;
-    fs::write(&path, bytes).map_err(|error| format!("无法写入 UI 状态：{error}"))?;
+    state.repository.write_setting(UI_STATE_KEY, &value).map_err(safe_error)?;
     Ok(ui_state)
 }
 
@@ -39,35 +31,8 @@ fn validate_workflow_graph(graph: WorkflowGraph) -> WorkflowValidationResult {
     }
 }
 
-#[tauri::command]
-fn workflow_node_impact(
-    node_id: String,
-    state: State<'_, DesktopState>,
-) -> Result<NodeImpact, String> {
-    load_workspace(&state.repository)?
-        .graph
-        .impact_of_node(&node_id)
-        .map_err(|error| error.message)
-}
-
-#[tauri::command]
-async fn save_workflow_graph(
-    graph: WorkflowGraph,
-    state: State<'_, DesktopState>,
-) -> Result<WorkflowGraph, String> {
-    graph.validate().map_err(|error| error.message)?;
-    ensure_no_running_publishers(&state).await?;
-    let mut workspace = load_workspace(&state.repository)?;
-    workspace.graph = graph;
-    workspace.validate().map_err(|error| error.message)?;
-    state.repository.save(&workspace).map_err(safe_error)?;
-    reload_control_plane(&state).await?;
-    Ok(workspace.graph)
-}
-
-fn read_ui_state(repository: &WorkspaceRepository) -> WorkspaceUiState {
-    let path = repository.root().join(UI_STATE_FILE);
-    let Ok(content) = fs::read_to_string(path) else {
+fn read_ui_state(repository: &impl RepositoryAccess) -> WorkspaceUiState {
+    let Ok(Some(content)) = repository.active_repository().read_setting(UI_STATE_KEY) else {
         return WorkspaceUiState::default();
     };
     let Ok(mut state) = serde_json::from_str::<WorkspaceUiState>(&content) else {
@@ -139,7 +104,7 @@ fn audit_records(
     query: AuditQuery,
     state: State<'_, DesktopState>,
 ) -> Result<Vec<ExecutionTrace>, String> {
-    read_jsonl_audit(audit_path(&state.repository), query.limit.unwrap_or(100)).map_err(safe_error)
+    state.repository.read_audit(query.limit.unwrap_or(100)).map_err(safe_error)
 }
 
 #[tauri::command]
@@ -150,14 +115,85 @@ fn export_workspace(state: State<'_, DesktopState>) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn workspace_storage_status(state: State<'_, DesktopState>) -> Result<WorkspaceHealth, String> {
+    state.repository.health().map_err(safe_error)
+}
+
+#[tauri::command]
+fn workspace_locations(state: State<'_, DesktopState>) -> Result<Vec<WorkspaceLocation>, String> { state.repository.locations() }
+
+async fn activate_repository(repository: WorkspaceRepository, state: &DesktopState) -> Result<DesktopSnapshot, String> {
+    ensure_no_running_publishers(state).await?;
+    repository.load().map_err(safe_error)?;
+    if !repository.health().map_err(safe_error)?.healthy { return Err("目标工作区数据库完整性检查失败。".to_owned()); }
+    let previous = state.repository.current();
+    if let Some(gateway) = state.gateway.lock().await.take() { gateway.stop().await; }
+    state.repository.switch_to(repository.clone())?;
+    if let Err(error) = state.inspection_reports.switch_to(repository) { let _ = state.repository.switch_to(previous); return Err(error); }
+    if let Err(error) = reload_control_plane(state).await { let _ = state.repository.switch_to(previous.clone()); let _ = state.inspection_reports.switch_to(previous); let _ = reload_control_plane(state).await; let _ = restart_gateway(state).await; return Err(error); }
+    if let Err(error) = restart_gateway(state).await { let _ = state.repository.switch_to(previous.clone()); let _ = state.inspection_reports.switch_to(previous); let _ = reload_control_plane(state).await; let _ = restart_gateway(state).await; return Err(error); }
+    snapshot(state).await
+}
+
+#[tauri::command]
+async fn create_workspace_at(input: CreateWorkspaceAtInput, state: State<'_, DesktopState>) -> Result<DesktopSnapshot, String> {
+    let root = PathBuf::from(input.root.trim());
+    if root.as_os_str().is_empty() { return Err("请选择工作区目录。".to_owned()); }
+    let repository = WorkspaceRepository::new(root);
+    if repository.exists() { return Err("所选目录已经包含 API ARRAY 工作区。".to_owned()); }
+    repository.save(&empty_workspace(&workspace_name(&input.name))).map_err(safe_error)?;
+    activate_repository(repository, &state).await
+}
+
+#[tauri::command]
+async fn open_workspace_at(input: WorkspacePathInput, state: State<'_, DesktopState>) -> Result<DesktopSnapshot, String> {
+    activate_repository(WorkspaceRepository::new(PathBuf::from(input.root.trim())), &state).await
+}
+
+#[tauri::command]
+async fn relocate_workspace(input: WorkspacePathInput, state: State<'_, DesktopState>) -> Result<DesktopSnapshot, String> {
+    let destination = PathBuf::from(input.root.trim());
+    if destination.as_os_str().is_empty() { return Err("请选择新的工作区目录。".to_owned()); }
+    if destination.join("workspace.sqlite3").exists() { return Err("目标目录已经存在工作区数据库。".to_owned()); }
+    ensure_no_running_publishers(&state).await?;
+    let source = state.repository.current();
+    let backup = source.backup().map_err(safe_error)?;
+    std::fs::create_dir_all(&destination).map_err(|_| "无法创建目标工作区目录。".to_owned())?;
+    std::fs::copy(&backup.path, destination.join("workspace.sqlite3")).map_err(|_| "无法复制工作区数据库。".to_owned())?;
+    for directory in ["attachments", "exports"] { copy_directory_if_present(&source.root().join(directory), &destination.join(directory))?; }
+    activate_repository(WorkspaceRepository::new(destination), &state).await
+}
+
+fn copy_directory_if_present(source: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+    if !source.is_dir() { return Ok(()); }
+    std::fs::create_dir_all(destination).map_err(|_| "无法创建工作区附属目录。".to_owned())?;
+    for entry in std::fs::read_dir(source).map_err(|_| "无法读取工作区附属目录。".to_owned())? { let entry = entry.map_err(|_| "无法读取工作区文件。".to_owned())?; let target = destination.join(entry.file_name()); if entry.path().is_dir() { copy_directory_if_present(&entry.path(), &target)?; } else { std::fs::copy(entry.path(), target).map_err(|_| "无法复制工作区附属文件。".to_owned())?; } }
+    Ok(())
+}
+
+#[tauri::command]
+fn verify_workspace(state: State<'_, DesktopState>) -> Result<WorkspaceHealth, String> {
+    state.repository.health().map_err(safe_error)
+}
+
+#[tauri::command]
+fn backup_workspace(state: State<'_, DesktopState>) -> Result<WorkspaceBackup, String> {
+    state.repository.backup().map_err(safe_error)
+}
+
+#[tauri::command]
+fn compact_workspace(state: State<'_, DesktopState>) -> Result<WorkspaceHealth, String> {
+    state.repository.compact().map_err(safe_error)?;
+    state.repository.health().map_err(safe_error)
+}
+
+#[tauri::command]
 async fn import_workspace(
     input: WorkspaceImportInput,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
     let loaded = load_workspace_json(&input.json).map_err(|error| error.message)?;
-    let WorkspaceLoad::Ready { workspace } = loaded else {
-        return Err("不支持导入比当前版本更新的工作区。".to_owned());
-    };
+    let WorkspaceLoad::Ready { workspace } = loaded;
     ensure_no_running_publishers(&state).await?;
     state.repository.save(&workspace).map_err(safe_error)?;
     reload_control_plane(&state).await?;
@@ -292,8 +328,10 @@ async fn refresh_canvas(
         .iter()
         .filter_map(|node| {
             node.config
-                .get("provider_instance_id")
+                .get("asset_id")
                 .and_then(Value::as_str)
+                .and_then(|asset_id| workspace.wallet.assets.get(asset_id))
+                .map(|asset| asset.provider_instance_id.as_str())
         })
         .collect::<BTreeSet<_>>();
     let resolver = StoreSecretResolver::new(state.secret_store.clone());

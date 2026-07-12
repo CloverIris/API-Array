@@ -21,7 +21,6 @@ pub struct WorkspacePackage {
     pub runtime: RuntimeConfig,
     #[serde(default)]
     pub runtime_state: WorkspaceRuntimeState,
-    pub graph: WorkflowGraph,
     /// Workspace-scoped API wallet. It only keeps references to provider
     /// instances and never owns a plaintext credential.
     #[serde(default)]
@@ -34,8 +33,7 @@ pub struct WorkspacePackage {
     /// compositions. It is deliberately loopback-only.
     #[serde(default)]
     pub gateway: DirectGateway,
-    /// Projects and canvases are the desktop composition model. `graph` stays
-    /// as the preserved legacy graph so V1 imports are lossless.
+    /// Projects and canvases are the only composition model.
     #[serde(default)]
     pub projects: WorkspaceProjects,
     #[serde(default)]
@@ -184,10 +182,6 @@ pub struct Canvas {
     pub applied_revision: u64,
     #[serde(default, alias = "publisher_id")]
     pub publisher_id: Option<String>,
-    /// V1 imports may contain more than one Publisher. Preserve them instead
-    /// of silently rewriting a user graph; new canvases always have one.
-    #[serde(default, alias = "legacy_multi_output")]
-    pub legacy_multi_output: bool,
 }
 
 const fn default_revision() -> u64 {
@@ -205,11 +199,6 @@ pub struct WorkspaceRuntimeState {
 pub enum WorkspaceLoad {
     Ready {
         workspace: Box<WorkspacePackage>,
-    },
-    ReadOnly {
-        schema_version: u32,
-        reason: String,
-        raw: Value,
     },
 }
 
@@ -271,9 +260,6 @@ impl WorkspacePackage {
         if let Err(error) = self.runtime.clone().compile() {
             append_issues(&mut issues, "runtime", error);
         }
-        if let Err(error) = self.graph.validate() {
-            append_issues(&mut issues, "graph", error);
-        }
         for (asset_id, asset) in &self.wallet.assets {
             if asset_id != &asset.id || asset.id.trim().is_empty() {
                 issues.push(ValidationIssue::new(format!("wallet.assets.{asset_id}.id"), "KEY_MISMATCH", "API wallet asset ID must match its map key"));
@@ -330,7 +316,7 @@ impl WorkspacePackage {
                 }
                 let publisher_nodes = canvas.graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Publisher).count();
                 let composer_nodes = canvas.graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Composer).count();
-                if !canvas.legacy_multi_output && publisher_nodes != 1 {
+                if publisher_nodes != 1 {
                     issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), "CANVAS_OUTPUT_REQUIRED", "New canvases must contain exactly one total Publisher output"));
                 }
                 if composer_nodes != 1 {
@@ -468,72 +454,6 @@ pub fn load_workspace_json(input: &str) -> Result<WorkspaceLoad, CoreError> {
     })
 }
 
-#[allow(dead_code)]
-fn migrate_workspace_v1(mut raw: Value) -> Result<WorkspacePackage, CoreError> {
-    let graph: WorkflowGraph = serde_json::from_value(raw.get("graph").cloned().ok_or_else(|| CoreError::new(ErrorCode::InvalidInput, "V1 workspace is missing graph"))?)?;
-    let publisher_ids = raw.pointer("/runtime/publishers").and_then(Value::as_object).map(|publishers| publishers.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
-    let legacy_multi_output = graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Publisher).count() != 1;
-    let canvas = Canvas {
-        id: "legacy-main".to_owned(),
-        name: "Imported main canvas".to_owned(),
-        folder_id: Some("default".to_owned()),
-        graph,
-        applied_graph: None,
-        draft_revision: 1,
-        applied_revision: 0,
-        publisher_id: publisher_ids.first().cloned(),
-        legacy_multi_output,
-    };
-    let project = Project {
-        id: "default".to_owned(),
-        name: "Default project".to_owned(),
-        folders: BTreeMap::from([("default".to_owned(), ProjectFolder { id: "default".to_owned(), name: "Canvases".to_owned(), canvas_ids: vec![canvas.id.clone()] })]),
-        canvases: BTreeMap::from([(canvas.id.clone(), canvas)]),
-    };
-    let assets = raw.pointer("/runtime/providers").and_then(Value::as_object).map(|providers| providers.iter().map(|(id, value)| {
-        let provider_id = value.pointer("/manifest/provider/id").and_then(Value::as_str).unwrap_or("custom-openai-compatible").to_owned();
-        let name = value.pointer("/manifest/provider/name").and_then(Value::as_str).unwrap_or(id).to_owned();
-        (id.clone(), ApiAsset { id: id.clone(), provider_instance_id: id.clone(), provider_id, name, enabled: false, billing: BillingPolicy::default() })
-    }).collect()).unwrap_or_default();
-    raw["schema_version"] = Value::from(WORKSPACE_SCHEMA_VERSION);
-    raw["wallet"] = serde_json::to_value(ApiWallet { assets })?;
-    raw["projects"] = serde_json::to_value(WorkspaceProjects {
-        projects: BTreeMap::from([(project.id.clone(), project)]),
-    })?;
-    serde_json::from_value(raw).map_err(Into::into)
-}
-
-#[allow(dead_code)]
-fn migrate_workspace_v2(mut raw: Value) -> Result<WorkspacePackage, CoreError> {
-    raw["schema_version"] = Value::from(WORKSPACE_SCHEMA_VERSION);
-    if let Some(projects) = raw.pointer_mut("/projects") {
-        if let Some(object) = projects.as_object_mut() {
-            object.remove("activeProjectId");
-            object.remove("activeCanvasId");
-            object.remove("active_project_id");
-            object.remove("active_canvas_id");
-        }
-        if let Some(project_map) = projects.get_mut("projects").and_then(Value::as_object_mut) {
-            for project in project_map.values_mut() {
-                if let Some(canvases) = project.get_mut("canvases").and_then(Value::as_object_mut) {
-                    for canvas in canvases.values_mut() {
-                        if canvas.get("draftRevision").is_none() {
-                            canvas["draftRevision"] = Value::from(1);
-                        }
-                        if canvas.get("appliedRevision").is_none() {
-                            canvas["appliedRevision"] = Value::from(0);
-                        }
-                        if canvas.get("appliedGraph").is_none() {
-                            canvas["appliedGraph"] = Value::Null;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    serde_json::from_value(raw).map_err(Into::into)
-}
-
 fn scan_sensitive_value(
     value: &Value,
     path: &str,
@@ -598,7 +518,6 @@ fn append_issues(issues: &mut Vec<ValidationIssue>, prefix: &str, error: CoreErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Node, NodeKind};
     use crate::catalog::builtin_provider_manifests;
     use crate::runtime::{ProviderInstance, RuntimeConfig};
 
@@ -614,20 +533,6 @@ mod tests {
                 publishers: BTreeMap::new(),
             },
             runtime_state: WorkspaceRuntimeState::default(),
-            graph: WorkflowGraph {
-                schema_version: crate::graph::GRAPH_SCHEMA_VERSION,
-                id: "graph".to_owned(),
-                nodes: vec![Node {
-                    id: "group".to_owned(),
-                    name: "Group".to_owned(),
-                    kind: NodeKind::Group,
-                    enabled: true,
-                    inputs: Vec::new(),
-                    outputs: Vec::new(),
-                    config: Value::Null,
-                }],
-                edges: Vec::new(),
-            },
             wallet: ApiWallet::default(),
             direct_endpoints: BTreeMap::new(),
             gateway: DirectGateway::default(),
@@ -641,9 +546,7 @@ mod tests {
     fn export_round_trip_is_deterministic() -> Result<(), CoreError> {
         let workspace = empty_workspace();
         let first = workspace.export_json()?;
-        let WorkspaceLoad::Ready { workspace } = load_workspace_json(&first)? else {
-            panic!("current schema must be ready");
-        };
+        let WorkspaceLoad::Ready { workspace } = load_workspace_json(&first)?;
         assert_eq!(first, workspace.export_json()?);
         Ok(())
     }

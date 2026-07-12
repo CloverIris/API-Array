@@ -82,6 +82,16 @@ export interface CodeTemplate {
   code: string;
 }
 
+export type TemplateLanguage = "curl" | "python" | "javascript_typescript" | "go" | "rust" | "java" | "csharp" | "cpp";
+export interface LiveDocumentFact { label: string; value: string }
+export type LiveDocumentSection =
+  | { kind: "paragraph"; title: string; body: string }
+  | { kind: "facts"; title: string; items: LiveDocumentFact[] }
+  | { kind: "steps"; title: string; items: string[] }
+  | { kind: "code"; title: string; block: { language: TemplateLanguage; title: string; code: string } }
+  | { kind: "note"; title: string; body: string; tone: "info" | "warning" | "security" };
+export interface LiveDocument { schema_version: number; title: string; summary: string; language: TemplateLanguage; endpoint_status: string; sections: LiveDocumentSection[]; markdown: string }
+
 export interface WalletCard {
   id: string;
   providerId: string;
@@ -112,7 +122,7 @@ export interface ProjectTree {
     id: string;
     name: string;
     folders: Record<string, { id: string; name: string; canvasIds: string[] }>;
-    canvases: Record<string, { id: string; name: string; folderId: string | null; graph?: WorkflowGraph; appliedGraph?: WorkflowGraph | null; draftRevision: number; appliedRevision: number; publisherId: string | null; legacyMultiOutput: boolean }>;
+    canvases: Record<string, { id: string; name: string; folderId: string | null; graph?: WorkflowGraph; appliedGraph?: WorkflowGraph | null; draftRevision: number; appliedRevision: number; publisherId: string | null }>;
   }>;
 }
 
@@ -169,10 +179,9 @@ export interface CanvasSnapshot {
     draftRevision: number;
     appliedRevision: number;
     publisherId: string | null;
-    legacyMultiOutput: boolean;
   };
   publisher: null | { id: string; status: PublisherLifecycle; message: string | null; baseUrl: string; publicModels: string[] };
-  providerInstanceIds: string[];
+  assetIds: string[];
   missingSecretCount: number;
 }
 
@@ -229,6 +238,9 @@ export const getWalletGallery = () => invoke<WalletCard[]>("wallet_gallery");
 export const createWalletAsset = (input: { providerId: string; name: string; endpointOverride?: string; monthlyBudgetMicros?: number; currency?: string; apiKey?: string }) => invoke<WalletCard>("create_wallet_asset", { input });
 export const updateWalletAsset = (input: { assetId: string; name: string; endpointOverride?: string; enabled: boolean; apiKey?: string; monthlyBudgetMicros?: number; currency?: string }) => invoke<WalletCard[]>("update_wallet_asset", { input });
 export const deleteWalletAsset = (assetId: string) => invoke<WalletCard[]>("delete_wallet_asset", { assetId });
+export const deleteWalletAssetSecret = (assetId: string) => invoke<WalletCard[]>("delete_wallet_asset_secret", { assetId });
+export interface SecretRevealResult { value: string; expiresInMs: number; protection: "windows_hello" }
+export const revealWalletSecret = (assetId: string) => invoke<SecretRevealResult>("reveal_wallet_secret", { assetId });
 export const getWalletAssetImpact = (assetId: string) => invoke<WalletAssetImpact>("wallet_asset_impact", { assetId });
 export const probeWalletAsset = (assetId: string) => invoke<InspectionReport>("probe_wallet_asset", { assetId });
 export const getDirectEndpoints = () => invoke<DirectEndpointItem[]>("direct_endpoints");
@@ -239,6 +251,7 @@ export const startDirectEndpoint = (endpointId: string) => invoke<DirectEndpoint
 export const pauseDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("pause_direct_endpoint", { input: { endpointId } });
 export const testDirectEndpoint = (endpointId: string) => invoke<PublisherConnectionTest>("test_direct_endpoint", { endpointId });
 export const getDirectEndpointTemplates = (endpointId: string) => invoke<CodeTemplate[]>("direct_endpoint_templates", { endpointId });
+export const getDirectEndpointLiveDocument = (endpointId: string, language: TemplateLanguage) => invoke<LiveDocument>("direct_endpoint_live_document", { endpointId, language });
 export const getProjectTree = () => invoke<{ projects: ProjectTree }>("project_tree").then((result) => result.projects);
 export const createProject = (name: string) => invoke<{ projects: ProjectTree }>("create_project", { input: { name } }).then((result) => result.projects);
 export const renameProject = (projectId: string, name: string) => invoke<{ projects: ProjectTree }>("rename_project", { input: { projectId, name } }).then((result) => result.projects);
@@ -300,17 +313,28 @@ export const compileCanvasGraph = (projectId: string, canvasId: string) => invok
 export const removePublisher = (publisherId: string) => invoke<DesktopSnapshot>("delete_publisher", { publisherId });
 export const getPublisherPreview = (publisherId: string) => invoke<{ id: string; baseUrl: string; loopbackOnly: boolean; authenticationEnabled: boolean }>("publisher_preview", { publisherId });
 export const getPublisherTemplates = (publisherId: string) => invoke<CodeTemplate[]>("publisher_templates", { publisherId });
+export const getCanvasLiveDocument = (publisherId: string, language: TemplateLanguage) => invoke<LiveDocument>("canvas_live_document", { publisherId, language });
+export const saveLiveDocumentMarkdown = (subjectType: "direct" | "canvas", subjectId: string, language: TemplateLanguage, filename: string) => invoke<string>("save_live_document_markdown", { input: { subjectType, subjectId, language, filename } });
+export const saveMarkdownDocument = (filename: string, markdown: string) => invoke<string>("save_markdown_document", { input: { filename, markdown } });
+
+export interface WorkspaceStorageStatus { healthy: boolean; integrity_message: string; database_bytes: number; revision: number; last_backup_at_ms: number | null }
+export interface WorkspaceBackup { path: string; created_at_ms: number; database_bytes: number }
+export interface WorkspaceLocation { id: string; name: string; root: string; last_opened_at_ms: number }
+export const getWorkspaceStorageStatus = () => invoke<WorkspaceStorageStatus>("workspace_storage_status");
+export const verifyWorkspace = () => invoke<WorkspaceStorageStatus>("verify_workspace");
+export const backupWorkspace = () => invoke<WorkspaceBackup>("backup_workspace");
+export const compactWorkspace = () => invoke<WorkspaceStorageStatus>("compact_workspace");
+export const getWorkspaceLocations = () => invoke<WorkspaceLocation[]>("workspace_locations");
+export const createWorkspaceAt = (root: string, name: string) => invoke<DesktopSnapshot>("create_workspace_at", { input: { root, name } });
+export const openWorkspaceAt = (root: string) => invoke<DesktopSnapshot>("open_workspace_at", { input: { root } });
+export const relocateWorkspace = (root: string) => invoke<DesktopSnapshot>("relocate_workspace", { input: { root } });
 export const testPublisherConnection = (publisherId: string) => invoke<PublisherConnectionTest>("test_publisher_connection", { publisherId });
 export const setWindowMaterialTheme = (dark: boolean) => invoke<void>("set_window_material_theme", { dark });
-export const getWorkflowGraph = () => invoke<WorkflowGraph>("workflow_graph");
-export const saveWorkflowGraph = (graph: WorkflowGraph) => invoke<WorkflowGraph>("save_workflow_graph", { graph });
 export const getWorkspaceUiState = () => invoke<WorkspaceUiState>("workspace_ui_state");
 export const saveWorkspaceUiState = (uiState: WorkspaceUiState) =>
   invoke<WorkspaceUiState>("save_workspace_ui_state", { uiState });
 export const validateWorkflowGraph = (graph: WorkflowGraph) =>
   invoke<WorkflowValidationResult>("validate_workflow_graph", { graph });
-export const getWorkflowNodeImpact = (nodeId: string) =>
-  invoke<WorkflowNodeImpact>("workflow_node_impact", { nodeId });
 export const getAuditRecords = (limit = 100) => invoke<ExecutionTrace[]>("audit_records", { query: { limit } });
 export const exportWorkspace = () => invoke<string>("export_workspace");
 export const importWorkspace = (json: string) => invoke<DesktopSnapshot>("import_workspace", { input: { json } });

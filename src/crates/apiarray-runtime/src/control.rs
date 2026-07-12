@@ -49,12 +49,7 @@ impl ControlPlane {
             loaded,
             recovered_from_backup,
         } = repository.load()?;
-        let WorkspaceLoad::Ready { workspace } = loaded else {
-            return Err(RuntimeError::new(
-                RuntimeErrorCode::CoreRejected,
-                "工作区版本不受支持，只能以只读方式打开",
-            ));
-        };
+        let WorkspaceLoad::Ready { workspace } = loaded;
         let runtime = Arc::new(workspace.runtime.clone().compile()?);
         let resolver = Arc::new(StoreSecretResolver::new(Arc::clone(&secret_store)));
         let supervisor = PublisherSupervisor::new(runtime, resolver, audit)?;
@@ -267,7 +262,6 @@ fn unix_millis() -> u64 {
 mod tests {
     use super::*;
     use crate::secret::MemorySecretStore;
-    use apiarray_core::graph::WorkflowGraph;
     use apiarray_core::runtime::RuntimeConfig;
     use apiarray_core::workspace::{ApiWallet, WorkspaceProjects, WorkspaceRuntimeState, WORKSPACE_SCHEMA_VERSION};
     use serde_json::Value;
@@ -291,12 +285,6 @@ mod tests {
                 publishers: BTreeMap::new(),
             },
             runtime_state: WorkspaceRuntimeState::default(),
-            graph: WorkflowGraph {
-                schema_version: apiarray_core::graph::GRAPH_SCHEMA_VERSION,
-                id: "graph".to_owned(),
-                nodes: Vec::new(),
-                edges: Vec::new(),
-            },
             wallet: ApiWallet::default(),
             direct_endpoints: BTreeMap::new(),
             gateway: apiarray_core::workspace::DirectGateway::default(),
