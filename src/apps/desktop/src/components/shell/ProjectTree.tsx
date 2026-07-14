@@ -185,7 +185,9 @@ function CompositionRow({ kind, label, icon, expanded, selected, status, statusL
   const className = `composition-tree-row composition-tree-row-${kind}${selected ? " selected" : ""}${staticRow ? " static" : ""}`;
   const visual = (
     <>
-      {kind !== "plan" ? <span className="composition-tree-disclosure" aria-hidden="true">{expanded === undefined ? null : expanded ? <ChevronDown /> : <ChevronRight />}</span> : null}
+      <span className="composition-tree-disclosure" aria-hidden="true">
+        {kind !== "plan" && expanded !== undefined ? expanded ? <ChevronDown /> : <ChevronRight /> : null}
+      </span>
       <span className="composition-tree-icon" aria-hidden="true">{kind === "plan" ? <span className={`canvas-status-dot status-${status}`} /> : icon}</span>
       <span className="composition-tree-label" title={label}>{label}</span>
       {status ? <span className="sr-only">{statusLabel}</span> : null}

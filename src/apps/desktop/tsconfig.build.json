@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    ".next-release/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next",
+    ".next-release/dev",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx"
+  ]
+}

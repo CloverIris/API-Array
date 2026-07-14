@@ -87,35 +87,33 @@ button { cursor: pointer; }
 .project-tree { display: flex; flex-direction: column; gap: 7px; padding: 10px 0 14px; }
 .project-tree-section-label { display: flex; align-items: center; justify-content: space-between; min-height: 28px; padding: 0 8px; color: var(--color-text-tertiary); font-size: 11px; font-weight: var(--font-weight-semibold); }
 .project-tree-section-label svg { width: 15px; }
-.composition-project-list { display: grid; min-width: 0; gap: 8px; }
-.composition-project-group, .composition-folder-group { display: grid; min-width: 0; gap: 2px; }
-.composition-project-children, .composition-folder-children { display: grid; min-width: 0; gap: 1px; }
-.composition-project-children { padding-left: 16px; }
-.composition-folder-children { padding-left: 20px; }
-.composition-tree-row { display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; min-width: 0; min-height: 30px; border-radius: var(--radius-lg); }
+.composition-project-list { display: grid; width: 100%; min-width: 0; gap: 7px; overflow-x: hidden; }
+.composition-project-group, .composition-folder-group { display: grid; width: 100%; min-width: 0; gap: 1px; }
+.composition-project-children, .composition-folder-children { display: grid; width: 100%; min-width: 0; gap: 1px; padding: 0; }
+.composition-tree-row { position: relative; display: block; width: 100%; min-width: 0; min-height: 32px; overflow: hidden; border-radius: var(--radius-lg); }
 .composition-tree-row:hover, .composition-tree-row:focus-within, .composition-tree-row.selected { background: var(--color-background-secondary-soft); }
-.composition-tree-main { display: flex; min-width: 0; min-height: 30px; align-items: center; gap: 7px; padding: 4px 4px 4px 6px; color: var(--color-text-secondary); text-align: left; border: 0; border-radius: var(--radius-lg); background: transparent; }
+.composition-tree-main { display: grid; width: 100%; min-width: 0; min-height: 32px; grid-template-columns: 14px 16px minmax(0, 1fr); align-items: center; gap: 7px; padding-block: 4px; padding-right: 34px; color: var(--color-text-secondary); text-align: left; border: 0; border-radius: var(--radius-lg); background: transparent; appearance: none; font: inherit; }
 .composition-tree-main.static { cursor: default; }
-.composition-tree-row-project .composition-tree-main { color: var(--color-text); font-weight: var(--font-weight-medium); }
-.composition-tree-row-folder .composition-tree-main { color: var(--color-text-secondary); }
-.composition-tree-row-plan .composition-tree-main { padding-left: 6px; }
+.composition-tree-row-project .composition-tree-main { padding-left: 5px; color: var(--color-text); font-weight: var(--font-weight-medium); }
+.composition-tree-row-folder .composition-tree-main { padding-left: 21px; color: var(--color-text-secondary); }
+.composition-tree-row-plan .composition-tree-main { padding-left: 37px; }
 .composition-tree-row.selected .composition-tree-main { color: var(--color-text); font-weight: var(--font-weight-semibold); }
-.composition-tree-row.selected .composition-tree-main::before { width: 2px; align-self: stretch; margin: 3px 2px 3px -4px; border-radius: var(--radius-full); background: var(--color-text-info); content: ""; }
+.composition-tree-row.selected::before { position: absolute; z-index: 1; top: 7px; bottom: 7px; left: 1px; width: 2px; border-radius: var(--radius-full); background: var(--color-text-info); content: ""; }
 .composition-tree-disclosure { display: grid; width: 13px; height: 18px; flex: 0 0 13px; place-items: center; color: var(--color-text-tertiary); }
 .composition-tree-disclosure svg { width: 12px; height: 12px; }
 .composition-tree-icon { display: grid; width: 16px; height: 16px; flex: 0 0 16px; place-items: center; color: var(--color-text-secondary); }
 .composition-tree-icon > svg { width: 15px; height: 15px; }
 .composition-tree-row-project .composition-tree-icon { color: var(--color-text-info); }
-.composition-tree-label { min-width: 0; overflow: hidden; font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
-.composition-tree-actions { display: grid; width: 28px; height: 28px; place-items: center; }
-.tree-menu-button { opacity: 0; }
-.composition-tree-row:hover .tree-menu-button, .composition-tree-row:focus-within .tree-menu-button { opacity: 1; }
+.composition-tree-label { display: block; min-width: 0; overflow: hidden; font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.composition-tree-actions { position: absolute; z-index: 2; top: 2px; right: 1px; display: grid; width: 28px; height: 28px; place-items: center; }
+.tree-menu-button { visibility: hidden; opacity: 0; }
+.composition-tree-row:hover .tree-menu-button, .composition-tree-row:focus-within .tree-menu-button { visibility: visible; opacity: 1; }
 .tree-menu-button svg { width: 15px; height: 15px; }
 .canvas-status-dot { display: block; width: 7px; height: 7px; border: 1px solid var(--color-border-strong); border-radius: 50%; background: var(--color-surface-secondary); }
 .canvas-status-dot.status-running { border-color: var(--color-border-success-outline); background: var(--color-background-success-solid); }
 .canvas-status-dot.status-paused { border-color: var(--color-border-warning-outline); background: var(--color-background-warning-solid); }
 .canvas-status-dot.status-failed { border-color: var(--color-border-danger-outline); background: var(--color-background-danger-solid); }
-.tree-empty { margin: 0; padding: 7px 10px 7px 28px; color: var(--color-text-tertiary); font-size: 11px; }
+.tree-empty { min-width: 0; margin: 0; padding: 7px 10px 7px 58px; overflow: hidden; color: var(--color-text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .project-tree-error { margin: 4px 8px; color: var(--color-text-danger); font-size: 10px; line-height: 1.4; }
 .sidebar.collapsed .project-tree { display: none; }
 .instance-primary-action { display: grid; width: 100%; min-height: 32px; margin-top: auto; place-items: center; color: var(--color-text-inverse); border: 1px solid transparent; border-radius: var(--radius-full); background: var(--color-background-primary-solid); font-weight: var(--font-weight-medium); }
