@@ -1,6 +1,6 @@
 use crate::{CoreError, ErrorCode, SCHEMA_VERSION, ValidationIssue};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoutePolicy {
@@ -12,15 +12,32 @@ pub struct RoutePolicy {
     pub max_retries: u32,
     #[serde(default)]
     pub failover_on: HashSet<StandardError>,
+    #[serde(default)]
+    pub selection_strategy: SelectionStrategy,
+    #[serde(default = "default_latency_hysteresis")]
+    pub latency_hysteresis_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionStrategy {
+    #[default]
+    PriorityFailover,
+    WeightedRoundRobin,
+    LowestLatency,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteCandidate {
     pub id: String,
     pub priority: u32,
+    #[serde(default = "default_weight")]
+    pub weight: u16,
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub health: HealthStatus,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
     #[serde(default)]
     pub models: HashSet<String>,
 }
@@ -75,6 +92,14 @@ pub enum RouteReason {
     PrimaryHealthy,
     PrimaryDegraded,
     FailoverAfterError,
+    WeightedSelection,
+    LowestLatency,
+}
+
+/// Smooth weighted round-robin state. It is runtime-only and is never persisted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WeightedSelectionState {
+    current: BTreeMap<String, i64>,
 }
 
 impl RoutePolicy {
@@ -87,6 +112,17 @@ impl RoutePolicy {
         &self,
         request: &RouteRequest,
         candidates: &[RouteCandidate],
+    ) -> Result<RouteDecision, CoreError> {
+        self.decide_with_state(request, candidates, None)
+    }
+
+    /// Selects a route and optionally advances smooth weighted round-robin state.
+    /// The supplied state is isolated by the caller per publisher and public model.
+    pub fn decide_with_state(
+        &self,
+        request: &RouteRequest,
+        candidates: &[RouteCandidate],
+        weighted_state: Option<&mut WeightedSelectionState>,
     ) -> Result<RouteDecision, CoreError> {
         self.validate()?;
         if let Some(error) = request.previous_error
@@ -111,16 +147,28 @@ impl RoutePolicy {
             })
             .collect();
         eligible.sort_by_key(|candidate| {
-            let health_rank = match candidate.health {
-                HealthStatus::Healthy => 0,
-                HealthStatus::Degraded => 1,
-                HealthStatus::Unknown => 2,
-                HealthStatus::Unhealthy | HealthStatus::Paused => 3,
-            };
-            (health_rank, candidate.priority, candidate.id.as_str())
+            (
+                health_rank(candidate.health),
+                candidate.priority,
+                candidate.id.as_str(),
+            )
         });
-
-        let selected = eligible.first().ok_or_else(|| {
+        let best_rank = eligible
+            .first()
+            .map(|candidate| health_rank(candidate.health));
+        let tier = eligible
+            .iter()
+            .copied()
+            .filter(|candidate| Some(health_rank(candidate.health)) == best_rank)
+            .collect::<Vec<_>>();
+        let selected = match self.selection_strategy {
+            SelectionStrategy::PriorityFailover => tier.first().copied(),
+            SelectionStrategy::WeightedRoundRobin => weighted_state
+                .and_then(|state| smooth_weighted(&tier, state))
+                .or_else(|| tier.first().copied()),
+            SelectionStrategy::LowestLatency => lowest_latency(&tier, self.latency_hysteresis_ms),
+        }
+        .ok_or_else(|| {
             CoreError::new(
                 ErrorCode::RouteUnavailable,
                 format!("没有可用于模型 {} 的候选线路", request.model),
@@ -128,6 +176,12 @@ impl RoutePolicy {
         })?;
         let reason = if request.previous_error.is_some() {
             RouteReason::FailoverAfterError
+        } else if self.selection_strategy == SelectionStrategy::WeightedRoundRobin {
+            RouteReason::WeightedSelection
+        } else if self.selection_strategy == SelectionStrategy::LowestLatency
+            && selected.latency_ms.is_some()
+        {
+            RouteReason::LowestLatency
         } else if selected.health == HealthStatus::Degraded {
             RouteReason::PrimaryDegraded
         } else {
@@ -174,6 +228,13 @@ impl RoutePolicy {
                 "首版最大重试次数不能超过 10",
             ));
         }
+        if self.latency_hysteresis_ms > 60_000 {
+            issues.push(ValidationIssue::new(
+                "latency_hysteresis_ms",
+                "OUT_OF_RANGE",
+                "最低延迟滞回必须在 0 到 60000 毫秒之间",
+            ));
+        }
         if issues.is_empty() {
             Ok(())
         } else {
@@ -186,12 +247,97 @@ impl RoutePolicy {
     }
 }
 
+fn health_rank(status: HealthStatus) -> u8 {
+    match status {
+        HealthStatus::Healthy => 0,
+        HealthStatus::Degraded => 1,
+        HealthStatus::Unknown => 2,
+        HealthStatus::Unhealthy | HealthStatus::Paused => 3,
+    }
+}
+
+fn smooth_weighted<'a>(
+    candidates: &[&'a RouteCandidate],
+    state: &mut WeightedSelectionState,
+) -> Option<&'a RouteCandidate> {
+    let total = candidates
+        .iter()
+        .map(|candidate| i64::from(candidate.weight.clamp(1, 100)))
+        .sum::<i64>();
+    let mut selected: Option<&RouteCandidate> = None;
+    let mut selected_score = i64::MIN;
+    for candidate in candidates {
+        let score = state.current.entry(candidate.id.clone()).or_default();
+        *score += i64::from(candidate.weight.clamp(1, 100));
+        if *score > selected_score
+            || (*score == selected_score
+                && selected.is_none_or(|current| candidate.id < current.id))
+        {
+            selected = Some(*candidate);
+            selected_score = *score;
+        }
+    }
+    if let Some(candidate) = selected {
+        if let Some(score) = state.current.get_mut(&candidate.id) {
+            *score -= total;
+        }
+    }
+    state
+        .current
+        .retain(|id, _| candidates.iter().any(|candidate| candidate.id == *id));
+    selected
+}
+
+fn lowest_latency<'a>(
+    candidates: &[&'a RouteCandidate],
+    hysteresis_ms: u64,
+) -> Option<&'a RouteCandidate> {
+    let mut sampled = candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.latency_ms.is_some())
+        .collect::<Vec<_>>();
+    if sampled.is_empty() {
+        return candidates.first().copied();
+    }
+    sampled.sort_by_key(|candidate| {
+        (
+            candidate.latency_ms.unwrap_or(u64::MAX),
+            candidate.priority,
+            candidate.id.as_str(),
+        )
+    });
+    let best = sampled[0];
+    candidates
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.priority < best.priority)
+        .find(|candidate| {
+            candidate.latency_ms.is_some_and(|latency| {
+                latency
+                    <= best
+                        .latency_ms
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(hysteresis_ms)
+            })
+        })
+        .or(Some(best))
+}
+
 const fn default_timeout() -> u64 {
     30_000
 }
 
 const fn default_true() -> bool {
     true
+}
+
+const fn default_weight() -> u16 {
+    1
+}
+
+const fn default_latency_hysteresis() -> u64 {
+    25
 }
 
 #[cfg(test)]
@@ -205,6 +351,8 @@ mod tests {
             timeout_ms: 30_000,
             max_retries: 2,
             failover_on: HashSet::from([StandardError::ProviderTimeout]),
+            selection_strategy: SelectionStrategy::PriorityFailover,
+            latency_hysteresis_ms: 25,
         }
     }
 
@@ -214,15 +362,19 @@ mod tests {
             RouteCandidate {
                 id: "degraded-primary".to_owned(),
                 priority: 0,
+                weight: 1,
                 enabled: true,
                 health: HealthStatus::Degraded,
+                latency_ms: None,
                 models: HashSet::new(),
             },
             RouteCandidate {
                 id: "healthy-backup".to_owned(),
                 priority: 10,
+                weight: 1,
                 enabled: true,
                 health: HealthStatus::Healthy,
+                latency_ms: None,
                 models: HashSet::new(),
             },
         ];
@@ -251,5 +403,84 @@ mod tests {
             )
             .expect_err("auth failure must not fail over by default");
         assert_eq!(error.code, ErrorCode::RouteUnavailable);
+    }
+
+    #[test]
+    fn smooth_weighted_round_robin_preserves_distribution() -> Result<(), CoreError> {
+        let mut policy = policy();
+        policy.selection_strategy = SelectionStrategy::WeightedRoundRobin;
+        let candidates = vec![
+            RouteCandidate {
+                id: "primary".to_owned(),
+                priority: 0,
+                weight: 3,
+                enabled: true,
+                health: HealthStatus::Healthy,
+                latency_ms: None,
+                models: HashSet::new(),
+            },
+            RouteCandidate {
+                id: "secondary".to_owned(),
+                priority: 0,
+                weight: 1,
+                enabled: true,
+                health: HealthStatus::Healthy,
+                latency_ms: None,
+                models: HashSet::new(),
+            },
+        ];
+        let request = RouteRequest {
+            model: "smart".to_owned(),
+            excluded_candidates: HashSet::new(),
+            previous_error: None,
+        };
+        let mut state = WeightedSelectionState::default();
+        let mut counts = BTreeMap::new();
+        for _ in 0..40 {
+            let selected = policy.decide_with_state(&request, &candidates, Some(&mut state))?;
+            *counts.entry(selected.candidate_id).or_insert(0_u32) += 1;
+        }
+        assert_eq!(counts["primary"], 30);
+        assert_eq!(counts["secondary"], 10);
+        Ok(())
+    }
+
+    #[test]
+    fn lowest_latency_uses_samples_and_priority_hysteresis() -> Result<(), CoreError> {
+        let mut policy = policy();
+        policy.selection_strategy = SelectionStrategy::LowestLatency;
+        policy.latency_hysteresis_ms = 15;
+        let request = RouteRequest {
+            model: "smart".to_owned(),
+            excluded_candidates: HashSet::new(),
+            previous_error: None,
+        };
+        let mut candidates = vec![
+            RouteCandidate {
+                id: "primary".to_owned(),
+                priority: 0,
+                weight: 1,
+                enabled: true,
+                health: HealthStatus::Healthy,
+                latency_ms: Some(100),
+                models: HashSet::new(),
+            },
+            RouteCandidate {
+                id: "fast".to_owned(),
+                priority: 10,
+                weight: 1,
+                enabled: true,
+                health: HealthStatus::Healthy,
+                latency_ms: Some(90),
+                models: HashSet::new(),
+            },
+        ];
+        assert_eq!(
+            policy.decide(&request, &candidates)?.candidate_id,
+            "primary"
+        );
+        candidates[1].latency_ms = Some(70);
+        assert_eq!(policy.decide(&request, &candidates)?.candidate_id, "fast");
+        Ok(())
     }
 }

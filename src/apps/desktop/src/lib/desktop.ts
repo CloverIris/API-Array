@@ -34,6 +34,25 @@ export const getApplicationVersion = () => invoke<ApplicationVersion>("applicati
 export const initializeWorkspace = (name: string) =>
   invoke<DesktopSnapshot>("initialize_workspace", { name });
 
+export const resetWorkspaceForGraphV3 = (confirmation: string, backupFirst: boolean) =>
+  invoke<DesktopSnapshot>("reset_workspace_for_graph_v3", {
+    input: { confirmation, backupFirst },
+  });
+
+export interface RouteSimulationResult {
+  publicModel: string;
+  strategy: SelectionStrategy;
+  selectedProviderNodeId: string | null;
+  selectedUpstreamModel: string | null;
+  orderedCandidates: string[];
+  explanation: string;
+}
+
+export const simulateCanvasRoute = (projectId: string, canvasId: string, publicModel: string) =>
+  invoke<RouteSimulationResult>("simulate_canvas_route", {
+    input: { projectId, canvasId, publicModel },
+  });
+
 export const changePublisherState = (
   action: "start" | "pause" | "stop",
   publisherId: string,
@@ -156,6 +175,24 @@ export interface ControlCenterSnapshot {
   blockedCount: number;
   failedCount: number;
 }
+export interface GatewayEntryStatus {
+  prefix: string;
+  publisherId: string;
+  mounted: boolean;
+  blocked: boolean;
+  reason: string | null;
+}
+export interface GatewayStatus {
+  configuredAddress: string;
+  configuredPort: number;
+  boundAddress: string | null;
+  boundPort: number | null;
+  running: boolean;
+  entries: GatewayEntryStatus[];
+  blockedEntries: GatewayEntryStatus[];
+  duplicateRoutes: string[];
+  error: string | null;
+}
 export interface ManagedInstanceActionResult {
   instanceId: string;
   previousStatus: ManagedInstanceStatus;
@@ -186,6 +223,7 @@ export interface ProjectTree {
   }>;
 }
 
+export type WorkflowPortType = "candidate" | "service_plan" | "health_signal";
 export interface WorkflowGraph {
   schema_version: number;
   id: string;
@@ -194,12 +232,68 @@ export interface WorkflowGraph {
     name: string;
     kind: "provider" | "composer" | "middleware" | "probe" | "publisher" | "group";
     enabled: boolean;
-    inputs: Array<{ id: string; data_type: string }>;
-    outputs: Array<{ id: string; data_type: string }>;
-    config: Record<string, unknown>;
+    inputs: Array<{ id: string; data_type: WorkflowPortType }>;
+    outputs: Array<{ id: string; data_type: WorkflowPortType }>;
+    config: WorkflowNodeConfig;
   }>;
-  edges: Array<{ id: string; from: { node: string; port: string }; to: { node: string; port: string } }>;
+  edges: Array<{ id: string; from: { node: string; port: string }; to: { node: string; port: string }; enabled: boolean; label?: string | null }>;
 }
+
+export type SelectionStrategy = "priority_failover" | "weighted_round_robin" | "lowest_latency";
+export type StandardRouteError = "AUTH_FAILED" | "RATE_LIMITED" | "BALANCE_EXHAUSTED" | "MODEL_UNAVAILABLE" | "PROVIDER_TIMEOUT" | "NETWORK_UNREACHABLE" | "TLS_FAILED" | "INVALID_REQUEST" | "INVALID_RESPONSE" | "CONTENT_REJECTED" | "INTERNAL_RUNTIME_ERROR";
+export interface CandidateBinding { provider_node_id: string; upstream_model: string; priority: number; weight: number; }
+export interface PublicModelRoute { public_model: string; candidates: CandidateBinding[]; }
+export type MiddlewareKind =
+  | { kind: "request_defaults"; temperature?: number | null; top_p?: number | null; max_output_tokens?: number | null }
+  | { kind: "model_policy"; allowed_models: string[]; max_output_tokens?: number | null }
+  | { kind: "rate_limit"; requests_per_minute: number; max_concurrent: number }
+  | { kind: "budget_monitor"; warning_thresholds: number[] };
+export type WorkflowNodeConfig =
+  | { type: "provider"; asset_id: string; selected_models: string[] }
+  | { type: "composer"; strategy: SelectionStrategy; timeout_ms: number; max_retries: number; failover_on: StandardRouteError[]; allow_capability_degradation: boolean; latency_hysteresis_ms: number; routes: PublicModelRoute[] }
+  | { type: "middleware"; middleware: MiddlewareKind }
+  | { type: "probe"; provider_node_id: string; interval_seconds: number; timeout_ms: number; failure_threshold: number; recovery_threshold: number; safe_only: boolean }
+  | { type: "publisher"; publisher_id?: string | null }
+  | { type: "group"; member_ids: string[]; collapsed: boolean };
+
+export interface CompilationIssue {
+  code: string;
+  severity: "error" | "warning";
+  message: string;
+  nodeId?: string | null;
+  edgeId?: string | null;
+  field?: string | null;
+  fixTarget?: string | null;
+}
+
+export interface CanvasCompilationReport {
+  valid: boolean;
+  publicModels: string[];
+  candidates: Array<{ providerNodeId: string; assetId: string; publicModel: string; upstreamModel: string; priority: number; weight: number }>;
+  candidateCount: number;
+  selectedStrategy: SelectionStrategy;
+  middlewareOrder: string[];
+  unreachableNodes: string[];
+  missingSecrets: string[];
+  staleRuntime: boolean;
+  requiresConfirmation: boolean;
+  warnings: CompilationIssue[];
+  errors: CompilationIssue[];
+}
+export interface CanvasRuntimeSnapshot {
+  projectId: string;
+  canvasId: string;
+  draftRevision: number;
+  appliedRevision: number;
+  staleRuntime: boolean;
+  publisherRunning: boolean;
+  strategy: SelectionStrategy;
+  providers: Array<{ providerNodeId: string; upstreamId: string; status: "healthy" | "degraded" | "unhealthy" | "unknown" | "paused"; latencyEwmaMs?: number | null; consecutiveFailures: number }>;
+  preferredCandidates: Record<string, string>;
+  middleware: string[];
+}
+export type GraphTemplateKind = "single_provider" | "priority_failover" | "multi_model" | "weighted_round_robin" | "lowest_latency" | "failover_with_probe" | "guarded_failover";
+export interface GraphNodeDefinition { kind: WorkflowGraph["nodes"][number]["kind"]; label: string; description: string; inputs: WorkflowGraph["nodes"][number]["inputs"]; outputs: WorkflowGraph["nodes"][number]["outputs"]; }
 
 export type CanvasTab = "overview" | "workflow" | "routes" | "publisher" | "docs" | "runs";
 
@@ -327,7 +421,7 @@ export const probeWalletAsset = (assetId: string) => invoke<InspectionReport>("p
 export const getDirectEndpoints = () => invoke<DirectEndpointItem[]>("direct_endpoints");
 export const createDirectEndpoint = (input: { endpointId?: string; assetId: string; name: string; alias: string; token: string; publicModel: string; upstreamModel: string; timeoutMs?: number; maxRetries?: number; monthlyBudgetMicros?: number; currency?: string }) => invoke<DirectEndpointItem[]>("create_direct_endpoint", { input });
 export const updateDirectEndpoint = (input: { endpointId: string; assetId: string; name: string; alias: string; token: string; publicModel: string; upstreamModel: string; timeoutMs?: number; maxRetries?: number; monthlyBudgetMicros?: number; currency?: string }) => invoke<DirectEndpointItem[]>("update_direct_endpoint", { input });
-export const deleteDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("delete_direct_endpoint", { input: { endpointId } });
+export const deleteDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("delete_direct_endpoint_safe", { input: { endpointId } });
 export const startDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("start_direct_endpoint", { input: { endpointId } });
 export const pauseDirectEndpoint = (endpointId: string) => invoke<DirectEndpointItem[]>("pause_direct_endpoint", { input: { endpointId } });
 export const getControlCenterSnapshot = () => invoke<ControlCenterSnapshot>("control_center_snapshot");
@@ -354,7 +448,12 @@ export const moveCanvas = (projectId: string, canvasId: string, folderId?: strin
 export const duplicateCanvas = (projectId: string, canvasId: string) => invoke<{ projects: ProjectTree }>("duplicate_canvas", { input: { projectId, canvasId } }).then((result) => result.projects);
 export const getCanvasGraph = (projectId: string, canvasId: string) => invoke<WorkflowGraph>("canvas_graph", { input: { projectId, canvasId } });
 export const getCanvasSnapshot = (projectId: string, canvasId: string) => invoke<CanvasSnapshot>("canvas_snapshot", { input: { projectId, canvasId } });
-export const saveCanvasGraph = (projectId: string, canvasId: string, graph: WorkflowGraph) => invoke<CanvasSnapshot>("save_canvas_graph", { input: { projectId, canvasId, graph } });
+export const saveCanvasGraph = (projectId: string, canvasId: string, expectedDraftRevision: number, graph: WorkflowGraph) => invoke<CanvasSnapshot>("save_canvas_graph", { input: { projectId, canvasId, expectedDraftRevision, graph } });
+export const getGraphNodeCatalog = () => invoke<GraphNodeDefinition[]>("graph_node_catalog");
+export const applyCanvasTemplate = (projectId: string, canvasId: string, expectedDraftRevision: number, template: GraphTemplateKind, assetIds: string[]) => invoke<CanvasSnapshot>("apply_canvas_template", { input: { projectId, canvasId, expectedDraftRevision, template, assetIds } });
+export const getCanvasRuntimeSnapshot = (projectId: string, canvasId: string) => invoke<CanvasRuntimeSnapshot>("canvas_runtime_snapshot", { input: { projectId, canvasId } });
+export const runCanvasProbe = (projectId: string, canvasId: string, probeNodeId: string) => invoke<InspectionReport>("run_canvas_probe", { input: { projectId, canvasId, probeNodeId } });
+export const setCanvasProbeSchedule = (projectId: string, canvasId: string, probeNodeId: string, enabled: boolean) => invoke<void>("set_canvas_probe_schedule", { input: { projectId, canvasId, probeNodeId, enabled } });
 export const getCanvasNodeImpact = (projectId: string, canvasId: string, nodeId: string) => invoke<WorkflowNodeImpact>("canvas_node_impact", { input: { projectId, canvasId }, nodeId });
 export const commitWalletPlacement = (projectId: string, canvasId: string, assetId: string) => invoke<{ projects: ProjectTree }>("commit_wallet_placement", { input: { projectId, canvasId, assetId } }).then((result) => result.projects);
 export const runCanvas = (projectId: string, canvasId: string) => invoke<DesktopSnapshot>("run_canvas", { input: { projectId, canvasId } });
@@ -398,7 +497,8 @@ export const createCanvasPublisher = (input: {
   basePath?: string;
   token: string;
 }) => invoke<DesktopSnapshot>("create_canvas_publisher", { input });
-export const compileCanvasGraph = (projectId: string, canvasId: string) => invoke<{ valid: boolean; publicModels: string[]; candidateCount: number; warnings: string[]; errors: string[] }>("compile_canvas_graph", { input: { projectId, canvasId } });
+export const compileCanvasGraph = (projectId: string, canvasId: string) => invoke<CanvasCompilationReport>("compile_canvas_graph", { input: { projectId, canvasId } });
+export const validateCanvasRuntime = (projectId: string, canvasId: string) => invoke<CanvasCompilationReport>("validate_canvas_runtime", { input: { projectId, canvasId } });
 export const removePublisher = (publisherId: string) => invoke<DesktopSnapshot>("delete_publisher", { publisherId });
 export const getPublisherPreview = (publisherId: string) => invoke<{ id: string; baseUrl: string; loopbackOnly: boolean; authenticationEnabled: boolean }>("publisher_preview", { publisherId });
 export const getPublisherTemplates = (publisherId: string) => invoke<CodeTemplate[]>("publisher_templates", { publisherId });
@@ -410,6 +510,7 @@ export interface WorkspaceStorageStatus { healthy: boolean; integrity_message: s
 export interface WorkspaceBackup { path: string; created_at_ms: number; database_bytes: number }
 export interface WorkspaceLocation { id: string; name: string; root: string; last_opened_at_ms: number }
 export const getWorkspaceStorageStatus = () => invoke<WorkspaceStorageStatus>("workspace_storage_status");
+export const getGatewayStatus = () => invoke<GatewayStatus>("gateway_status");
 export const updateGatewaySettings = (listenAddress: string, port: number) => invoke<DesktopSnapshot>("update_gateway_settings", { input: { listenAddress, port } });
 export const verifyWorkspace = () => invoke<WorkspaceStorageStatus>("verify_workspace");
 export const backupWorkspace = () => invoke<WorkspaceBackup>("backup_workspace");

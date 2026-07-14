@@ -20,6 +20,7 @@ fn provider_to_plan_to_response_to_templates_pipeline() -> Result<(), Box<dyn st
         messages: vec![Message::text(Role::User, "Hello")],
         max_output_tokens: 256,
         temperature: Some(0.2),
+        top_p: None,
         stream: true,
         tools: Vec::new(),
         tool_choice: ToolChoice::Auto,

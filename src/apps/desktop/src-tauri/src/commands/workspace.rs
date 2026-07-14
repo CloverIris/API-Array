@@ -177,6 +177,11 @@ fn workspace_storage_status(state: State<'_, DesktopState>) -> Result<WorkspaceH
 }
 
 #[tauri::command]
+async fn gateway_status(state: State<'_, DesktopState>) -> Result<apiarray_runtime::gateway::GatewayStatus, String> {
+    desktop_gateway_status(&state).await
+}
+
+#[tauri::command]
 async fn update_gateway_settings(input: GatewaySettingsInput, app: AppHandle, state: State<'_, DesktopState>) -> Result<DesktopSnapshot, String> {
     if input.port < 1024 { return Err("本地端口必须大于等于 1024。".to_owned()); }
     gateway_socket_address(input.listen_address.trim(), input.port)?;
@@ -310,6 +315,69 @@ async fn initialize_workspace(
     snapshot(&state).await
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResetWorkspaceForGraphV3Input {
+    confirmation: String,
+    backup_first: bool,
+}
+
+/// Performs the deliberately destructive Graph V3 reset.
+///
+/// This command is intentionally unavailable through startup code. The UI must
+/// present the impact summary and collect the exact confirmation phrase first.
+#[tauri::command]
+async fn reset_workspace_for_graph_v3(
+    input: ResetWorkspaceForGraphV3Input,
+    app: AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<DesktopSnapshot, String> {
+    const CONFIRMATION: &str = "重置为 Graph V3";
+    if input.confirmation.trim() != CONFIRMATION {
+        return Err(format!("请输入“{CONFIRMATION}”以确认重置。"));
+    }
+
+    let _mutation = state.workspace_mutation.lock().await;
+    let repository = state.repository.current();
+    if input.backup_first {
+        repository.backup().map_err(|error| {
+            format!("备份失败，工作区未重置：{}", safe_error(error))
+        })?;
+    }
+
+    let secret_refs = repository.referenced_secret_refs().map_err(safe_error)?;
+    if let Some(gateway) = state.gateway.lock().await.take() {
+        gateway.stop().await;
+    }
+    let probe_tasks = std::mem::take(&mut *state.probe_tasks.lock().await);
+    for (_, task) in probe_tasks {
+        task.abort();
+    }
+    *state.control_plane.lock().await = None;
+
+    for reference in &secret_refs {
+        if state.secret_store.contains(reference) {
+            state.secret_store.delete(reference).map_err(|error| {
+                format!("无法清理旧凭据，工作区数据尚未删除：{}", safe_error(error))
+            })?;
+        }
+    }
+
+    repository.clear_workspace_files().map_err(safe_error)?;
+    repository
+        .save(&empty_workspace("我的 API ARRAY 工作区"))
+        .map_err(safe_error)?;
+    state.inspection_reports.switch_to(repository)?;
+    reload_control_plane(&state).await?;
+    restart_gateway(&state).await?;
+    *state.startup_error.lock().await = None;
+
+    let result = snapshot(&state).await?;
+    let _ = app.emit("desktop:instances-changed", ());
+    let _ = app.emit("desktop:canvas-compilation-changed", ());
+    Ok(result)
+}
+
 #[tauri::command]
 async fn start_publisher(
     publisher_id: String,
@@ -328,6 +396,10 @@ async fn run_canvas(
     app: AppHandle,
     state: State<'_, DesktopState>,
 ) -> Result<DesktopSnapshot, String> {
+    let compilation = canvas_compilation_report(&state, &input)?;
+    if !compilation.valid {
+        return Err(compilation.errors.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>().join("；"));
+    }
     let mut workspace = load_workspace(&state.repository)?;
     let graph = workspace
         .projects
@@ -350,7 +422,10 @@ async fn run_canvas(
     })?;
     canvas.applied_graph = Some(canvas.graph.clone());
     canvas.applied_revision = canvas.draft_revision;
-    if let Some(publisher) = workspace.runtime.publishers.get_mut(&publisher_id) { publisher.routes = compiled.routes; }
+    if let Some(publisher) = workspace.runtime.publishers.get_mut(&publisher_id) {
+        publisher.routes = compiled.routes;
+        publisher.middleware = compiled.middleware;
+    }
     workspace.validate().map_err(|error| error.message)?;
     workspace.runtime_state.enabled_publishers.insert(publisher_id);
     state.repository.save(&workspace).map_err(safe_error)?;
@@ -429,9 +504,8 @@ async fn refresh_canvas(
         .nodes
         .iter()
         .filter_map(|node| {
-            node.config
-                .get("asset_id")
-                .and_then(Value::as_str)
+            node.provider_config()
+                .map(|config| config.asset_id.as_str())
                 .and_then(|asset_id| workspace.wallet.assets.get(asset_id))
                 .map(|asset| asset.provider_instance_id.as_str())
         })

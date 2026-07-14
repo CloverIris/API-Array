@@ -3,13 +3,13 @@ import type { WorkflowGraph, WorkspaceUiState } from "../../lib/desktop";
 import { canvasToGraph, connectionCreatesCycle, graphToCanvas, layeredPositions, newWorkflowNode } from "./graphModel";
 
 const graph: WorkflowGraph = {
-  schema_version: 2,
+  schema_version: 3,
   id: "main",
   nodes: [
-    { id: "source", name: "Source", kind: "provider", enabled: true, inputs: [], outputs: [{ id: "candidate_out", data_type: "candidate" }], config: {} },
-    { id: "target", name: "Target", kind: "composer", enabled: true, inputs: [{ id: "candidate_in", data_type: "candidate" }, { id: "health_in", data_type: "health_signal" }], outputs: [{ id: "service_plan_out", data_type: "service_plan" }], config: {} },
+    { id: "source", name: "Source", kind: "provider", enabled: true, inputs: [], outputs: [{ id: "candidate_out", data_type: "candidate" }], config: { type: "provider", asset_id: "asset-source", selected_models: ["default"] } },
+    { id: "target", name: "Target", kind: "composer", enabled: true, inputs: [{ id: "candidate_in", data_type: "candidate" }, { id: "health_in", data_type: "health_signal" }], outputs: [{ id: "service_plan_out", data_type: "service_plan" }], config: { type: "composer", strategy: "priority_failover", timeout_ms: 30_000, max_retries: 2, failover_on: ["PROVIDER_TIMEOUT"], allow_capability_degradation: false, latency_hysteresis_ms: 25, routes: [] } },
   ],
-  edges: [{ id: "source-target", from: { node: "source", port: "candidate_out" }, to: { node: "target", port: "candidate_in" } }],
+  edges: [{ id: "source-target", from: { node: "source", port: "candidate_out" }, to: { node: "target", port: "candidate_in" }, enabled: true, label: null }],
 };
 
 const uiState: WorkspaceUiState = {
@@ -49,7 +49,8 @@ describe("workflow graph canvas adapter", () => {
     for (const kind of ["provider", "composer", "middleware", "probe", "publisher", "group"] as const) {
       const node = newWorkflowNode(kind, 0);
       expect(node.kind).toBe(kind);
-      expect(node.config).toEqual({});
+      expect(node.config.type).toBe(kind);
+      expect(JSON.stringify(node.config)).not.toContain("secret");
       if (kind === "group") expect(node.inputs.length + node.outputs.length).toBe(0); else expect(node.inputs.length + node.outputs.length).toBeGreaterThan(0);
     }
   });

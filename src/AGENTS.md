@@ -1,5 +1,32 @@
 # API ARRAY 开发约定
 
+## V1.2 Graph V3 高级编组器强制约束
+
+开始任何编组方案、Graph、Composer、Probe、Middleware、路由或运行覆盖层工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V1.2_GraphV3高级编组器.md`。
+
+- 产品版本继续固定为 **API ARRAY 1.0.0 Preview**；除非用户明确要求，不主动升版。
+- Graph V3 是 API 服务计划编译器，不是 HTTP Request/Response 数据流引擎。
+- `NodeConfig` 必须由 Core 强类型模型定义；前端不得发明 Runtime 不执行的自由 JSON 字段。
+- OpenAI、Anthropic、Gemini 等协议差异由 Canonical Adapter 自动转换，不能要求用户手工增加协议转换节点。
+- Composer 只允许优先级故障切换、平滑加权轮询和最低延迟三种受控策略。
+- Probe 只允许 Manifest 声明的无副作用探测；Middleware 禁止脚本、表达式、任意 HTTP 和第三方代码。
+- 每个编组方案恰好一个 Composer 和一个 Publisher；ServicePlan 首版禁止分叉。
+- 保存草稿、编译和应用运行快照是三个不同状态；运行覆盖层只读，不得污染草稿。
+- Graph V3 旧工作区只能在阻塞页经备份选项和明确确认后重置；启动流程禁止静默删除任何数据或凭据。
+- Secret、Publisher Token、Header 和正文不得进入 Graph、UI State、编译报告、日志或导出。
+
+## V1.1 第二阶段可用性与可靠性基线
+
+开始任何 API 钱包、审计直出、编组方案、网关、运行记录、通知、设置、生命周期或发布质量相关工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V1.1_第二阶段可用性与可靠性.md`。
+
+- 第二阶段继续固定为 **API ARRAY 1.0.0 Preview**；除非用户明确要求，不主动升版。
+- 主控台只是 Direct Endpoint 与编组方案出口的运行投影和控制面，不得持久化第三份配置事实源。
+- 运行变更必须优先保证配置事实、Runtime 快照、LocalGateway 入口、审计记录和 UI 状态一致。
+- Gateway 入口固定为 `/direct/{alias}/v1` 与 `/canvas/{projectId}/{canvasId}/v1`，并且只允许 localhost。
+- Graph V3 运行前必须使用运行语义校验报告；保存级结构校验不能替代发布级校验。
+- 审计写入失败不得继续显示“审计正常”；必须进入可见降级或阻塞状态。
+- 所有用户可见文案继续使用“编组方案”和“文档”，不得恢复 Canvas 或“活文档”称呼。
+
 ## 1.0.0 Preview 发布基线
 
 当前用户展示版本固定为 **API ARRAY 1.0.0 Preview**。唯一版本源是 `product-version.json`；除非用户明确要求，禁止主动升版或修改版本通道。开始任何发布、安装、运行记录、通知或用户可见术语工作前，必须阅读 `../docs/API_ARRAY_产品设计文档_V1.0.0_Preview_发布就绪.md`。
@@ -55,7 +82,7 @@
 - 运行端口只允许 Candidate、ServicePlan、HealthSignal。
 - Provider 协议转换由 Rust Adapter 层自动完成；Composer 是多 Provider 唯一汇聚点。
 - 每个 Canvas 恰好一个 Composer 和一个 Publisher；Group 不参与运行边。
-- Workspace V6 与 Graph V2 不兼容旧数据，不得新增 V5 或旧端口迁移逻辑。
+- 当前 Workspace Schema 与 Graph V3 不兼容旧数据；只能经阻塞页明确确认后重置，不得新增旧端口迁移逻辑。
 
 > **V0.2 钱包与项目画布约束**：开始桌面、Workspace 或工作流相关工作前，必须阅读
 > `docs/API_ARRAY_产品设计文档_V0.2_钱包与项目画布变更.md`。API 钱包是工作区级资产；
@@ -291,7 +318,7 @@ CLI 输入输出结构必须版本化，至少预留 `schema_version` 字段。
 - 全局层管理钱包、运行总览、综合器、Publisher 总面板和审计；Project/Folder 仅组织 Canvas。
 - Canvas 是唯一编辑与运行边界，拥有独立 Graph、草稿/应用版本、Publisher、活文档和记录。
 - 所有 Canvas IPC 变更必须显式提供 `projectId + canvasId`，不得从当前 UI 选择推断后端目标。
-- Workspace V6 不再包含全局 `workspace.graph`；每个 Canvas 的 Graph V2 是唯一编组事实来源。
+- 当前 Workspace 不包含全局 `workspace.graph`；每个编组方案的 Graph V3 是唯一编组事实来源。
 - API Wallet 是 Workspace 共享资产；删除 Canvas 不得删除钱包资产或上游 Secret。
 - 复制 Canvas 不复制 Token、端口或运行状态；Secret 不通过 IPC 返回，也不进入日志、UI State 或导出。
 - 前端边界必须规范化 camelCase/snake_case 旧数据，缺失数组和映射一律安全降级，禁止未检查的 `.map()`。

@@ -38,6 +38,7 @@ pub enum HealthTransition {
     Failed,
     FailedOver,
     Recovered,
+    BudgetWarning,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

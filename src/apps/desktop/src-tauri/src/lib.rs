@@ -1,4 +1,4 @@
-﻿use std::{
+use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     path::PathBuf,
     sync::{
@@ -12,23 +12,37 @@ use apiarray_core::{
     SCHEMA_VERSION,
     catalog::builtin_provider_manifests,
     graph::{
-        compile_canvas_graph as compile_graph, CanvasCompilationReport, Edge, Endpoint, GraphSummary, Node, NodeImpact, NodeKind, Port, PortType, WorkflowGraph, GRAPH_SCHEMA_VERSION,
+        CandidateBinding, CanvasCompilationReport, CompilationIssue, Edge, Endpoint, GraphSummary,
+        GraphTemplateKind, IssueSeverity, MiddlewareConfig, MiddlewareKind, Node, NodeConfig,
+        NodeImpact, NodeKind, Port, PortType, ProviderConfig, PublicModelRoute,
+        PublisherNodeConfig, RouteSimulationInput, RouteSimulationResult, WorkflowGraph,
+        compile_canvas_graph as compile_graph, generate_graph_template,
+        new_canvas_graph as core_new_canvas_graph, node_catalog, simulate_route,
+        validate_runtime_semantics,
     },
+    health::{EndpointHealth, HealthObservation, HealthPolicy},
+    inspection::{InspectionOverall, InspectionReport},
     publisher::PublisherSummary,
-    routing::{RoutePolicy, StandardError},
+    routing::{HealthStatus, RoutePolicy, SelectionStrategy, StandardError},
     runtime::{ModelRoute, ProviderInstance, RuntimeConfig, RuntimePublisher, UpstreamRoute},
     secret::SecretRef,
-    templates::{CodeTemplate, LiveDocument, TemplateContext, TemplateLanguage, generate_live_document, generate_templates},
+    templates::{
+        CodeTemplate, LiveDocument, TemplateContext, TemplateLanguage, generate_live_document,
+        generate_templates,
+    },
     workspace::{
-        ApiAsset, ApiWallet, BillingPolicy, Canvas, DirectEndpoint, DirectModelMapping, Project, ProjectFolder,
-        WORKSPACE_SCHEMA_VERSION, WorkspaceLoad, WorkspacePackage, WorkspaceProjects,
-        WorkspaceRuntimeState, load_workspace_json,
+        ApiAsset, ApiWallet, BillingPolicy, Canvas, DirectEndpoint, DirectModelMapping, Project,
+        ProjectFolder, WORKSPACE_SCHEMA_VERSION, WorkspaceLoad, WorkspacePackage,
+        WorkspaceProjects, WorkspaceRuntimeState, load_workspace_json,
     },
 };
 use apiarray_runtime::{
     control::{ControlPlane, ControlPlaneSnapshot},
     inspection::{InspectionRepository, ProviderProbeRunner},
-    persistence::{WorkspaceBackup, WorkspaceHealth, WorkspaceLocation, WorkspaceRepository},
+    persistence::{
+        StorageTransactionResult, WorkspaceBackup, WorkspaceHealth, WorkspaceLocation,
+        WorkspaceRepository,
+    },
     resilience::{ExecutionTrace, SqliteAuditSink},
     secret::{SecretStore, SecretValue, StoreSecretResolver, WindowsCredentialStore},
     supervisor::PublisherLifecycle,
@@ -61,7 +75,13 @@ include!("commands/instances.rs");
 #[tauri::command]
 fn set_window_material_theme(dark: Option<bool>, window: WebviewWindow) -> Result<(), String> {
     window
-        .set_theme(dark.map(|dark| if dark { tauri::Theme::Dark } else { tauri::Theme::Light }))
+        .set_theme(dark.map(|dark| {
+            if dark {
+                tauri::Theme::Dark
+            } else {
+                tauri::Theme::Light
+            }
+        }))
         .map_err(|error| format!("无法同步窗口主题：{error}"))?;
     apply_native_material(&window, dark);
     Ok(())
@@ -76,10 +96,10 @@ include!("host.rs");
 #[cfg(test)]
 mod tests {
     use super::{
-        ShellUiState, WorkspaceUiState, empty_workspace, model_count_from_payload,
-        apply_instance_stop, managed_instance_id, parse_managed_instance_id, new_canvas_graph,
-        read_ui_state, sanitize_ui_state, workspace_name, DirectEndpoint, ManagedInstanceKind,
-        NodeKind, SecretRef, UI_STATE_KEY, webview_assets_changed,
+        DirectEndpoint, ManagedInstanceKind, NodeKind, SecretRef, ShellUiState, UI_STATE_KEY,
+        WorkspaceUiState, apply_instance_stop, empty_workspace, managed_instance_id,
+        model_count_from_payload, new_canvas_graph, parse_managed_instance_id, read_ui_state,
+        sanitize_ui_state, staged_secret_ref, webview_assets_changed, workspace_name,
     };
     use apiarray_runtime::persistence::WorkspaceRepository;
 
@@ -100,13 +120,30 @@ mod tests {
     }
 
     #[test]
+    fn staged_secret_references_are_unique_and_contain_no_secret_value() {
+        let first = staged_secret_ref("wallet", "asset-a", "api-key").expect("reference");
+        let second = staged_secret_ref("wallet", "asset-a", "api-key").expect("reference");
+        assert_ne!(first, second);
+        assert!(
+            first
+                .as_str()
+                .starts_with("secret://wallet/asset-a/api-key-rotate-")
+        );
+    }
+
+    #[test]
     fn new_canvas_starts_with_one_valid_total_output() {
         let graph = new_canvas_graph("canvas-a");
         let summary = graph.validate().expect("new canvas graph is valid");
         assert_eq!(summary.publisher_count, 1);
         assert_eq!(summary.node_count, 2);
         assert_eq!(summary.edge_count, 1);
-        assert!(graph.nodes.iter().any(|node| node.kind == NodeKind::Composer));
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.kind == NodeKind::Composer)
+        );
     }
 
     #[test]
@@ -164,7 +201,9 @@ mod tests {
     fn corrupted_ui_state_falls_back_without_blocking_workspace() {
         let root = std::env::temp_dir().join(format!("apiarray-ui-state-{}", std::process::id()));
         let repository = WorkspaceRepository::new(&root);
-        repository.write_setting(UI_STATE_KEY, "{not-json").expect("corrupted fixture is written");
+        repository
+            .write_setting(UI_STATE_KEY, "{not-json")
+            .expect("corrupted fixture is written");
 
         assert_eq!(read_ui_state(&repository), WorkspaceUiState::default());
 
@@ -186,10 +225,14 @@ mod tests {
     #[test]
     fn managed_instance_ids_are_stable_and_explicitly_scoped() {
         let direct = managed_instance_id(ManagedInstanceKind::DirectEndpoint, "primary", None);
-        let canvas = managed_instance_id(ManagedInstanceKind::Canvas, "project-a", Some("canvas-b"));
+        let canvas =
+            managed_instance_id(ManagedInstanceKind::Canvas, "project-a", Some("canvas-b"));
         assert_eq!(direct, "direct:primary");
         assert_eq!(canvas, "canvas:project-a:canvas-b");
-        assert_eq!(parse_managed_instance_id(&direct).expect("direct id").0, ManagedInstanceKind::DirectEndpoint);
+        assert_eq!(
+            parse_managed_instance_id(&direct).expect("direct id").0,
+            ManagedInstanceKind::DirectEndpoint
+        );
         let parsed = parse_managed_instance_id(&canvas).expect("canvas id");
         assert_eq!(parsed.1, "project-a");
         assert_eq!(parsed.2.as_deref(), Some("canvas-b"));
@@ -199,19 +242,50 @@ mod tests {
     #[test]
     fn stopping_one_instance_does_not_change_another_instance_intent() {
         let mut workspace = empty_workspace("rack-test");
-        workspace.direct_endpoints.insert("direct-a".to_owned(), DirectEndpoint {
-            id: "direct-a".to_owned(), name: "Direct A".to_owned(), alias: "direct-a".to_owned(),
-            asset_id: "asset-a".to_owned(), token_ref: SecretRef::parse("secret://direct/direct-a/token").expect("secret ref"),
-            enabled: true, models: Vec::new(), timeout_ms: 30_000, max_retries: 2,
-            audit_tags: std::collections::BTreeMap::new(), billing_override: None,
-        });
-        workspace.projects.projects.get_mut("default").expect("project").canvases.get_mut("main").expect("canvas").publisher_id = Some("canvas-publisher".to_owned());
-        workspace.runtime_state.enabled_publishers.insert("canvas-publisher".to_owned());
+        workspace.direct_endpoints.insert(
+            "direct-a".to_owned(),
+            DirectEndpoint {
+                id: "direct-a".to_owned(),
+                name: "Direct A".to_owned(),
+                alias: "direct-a".to_owned(),
+                asset_id: "asset-a".to_owned(),
+                token_ref: SecretRef::parse("secret://direct/direct-a/token").expect("secret ref"),
+                enabled: true,
+                models: Vec::new(),
+                timeout_ms: 30_000,
+                max_retries: 2,
+                audit_tags: std::collections::BTreeMap::new(),
+                billing_override: None,
+            },
+        );
+        workspace
+            .projects
+            .projects
+            .get_mut("default")
+            .expect("project")
+            .canvases
+            .get_mut("main")
+            .expect("canvas")
+            .publisher_id = Some("canvas-publisher".to_owned());
+        workspace
+            .runtime_state
+            .enabled_publishers
+            .insert("canvas-publisher".to_owned());
         assert!(apply_instance_stop(&mut workspace, "direct:direct-a").expect("stop direct"));
         assert!(!workspace.direct_endpoints["direct-a"].enabled);
-        assert!(workspace.runtime_state.enabled_publishers.contains("canvas-publisher"));
+        assert!(
+            workspace
+                .runtime_state
+                .enabled_publishers
+                .contains("canvas-publisher")
+        );
         assert!(apply_instance_stop(&mut workspace, "canvas:default:main").expect("stop canvas"));
-        assert!(!workspace.runtime_state.enabled_publishers.contains("canvas-publisher"));
+        assert!(
+            !workspace
+                .runtime_state
+                .enabled_publishers
+                .contains("canvas-publisher")
+        );
     }
 
     #[test]

@@ -10,10 +10,13 @@ struct DesktopState {
     probe_runner: ProviderProbeRunner,
     inspection_reports: ActiveInspectionRepository,
     paused_probes: Mutex<BTreeSet<String>>,
+    probe_health: Mutex<BTreeMap<String, EndpointHealth>>,
+    probe_tasks: Mutex<BTreeMap<String, tokio::task::JoinHandle<()>>>,
     control_plane: Mutex<Option<ControlPlane>>,
     gateway: Mutex<Option<apiarray_runtime::gateway::LocalGateway>>,
     gateway_error: Mutex<Option<String>>,
     startup_error: Mutex<Option<String>>,
+    workspace_mutation: Mutex<()>,
     is_quitting: AtomicBool,
 }
 

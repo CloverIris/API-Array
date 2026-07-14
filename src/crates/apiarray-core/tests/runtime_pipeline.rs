@@ -1,7 +1,7 @@
 use apiarray_core::canonical::{CanonicalRequest, Message, ResponseFormat, Role, ToolChoice};
 use apiarray_core::provider::ProviderManifest;
 use apiarray_core::publisher::PublisherConfig;
-use apiarray_core::routing::{HealthStatus, RoutePolicy, StandardError};
+use apiarray_core::routing::{HealthStatus, RoutePolicy, SelectionStrategy, StandardError};
 use apiarray_core::runtime::{
     DispatchRequest, ModelRoute, ProviderInstance, RouteCondition, RuntimeConfig, RuntimePublisher,
     UpstreamRoute,
@@ -63,6 +63,8 @@ fn runtime_config() -> RuntimeConfig {
                             StandardError::ProviderTimeout,
                             StandardError::RateLimited,
                         ]),
+                        selection_strategy: SelectionStrategy::PriorityFailover,
+                        latency_hysteresis_ms: 25,
                     },
                     upstreams: vec![
                         UpstreamRoute {
@@ -70,19 +72,24 @@ fn runtime_config() -> RuntimeConfig {
                             provider_instance: "primary".to_owned(),
                             upstream_model: "primary-model".to_owned(),
                             priority: 0,
+                            weight: 1,
                             enabled: true,
                             conditions: Vec::new(),
+                            billing: Default::default(),
                         },
                         UpstreamRoute {
                             id: "backup-route".to_owned(),
                             provider_instance: "backup".to_owned(),
                             upstream_model: "backup-model".to_owned(),
                             priority: 10,
+                            weight: 1,
                             enabled: true,
                             conditions: Vec::new(),
+                            billing: Default::default(),
                         },
                     ],
                 }],
+                middleware: Vec::new(),
             },
         )]),
     }
@@ -95,6 +102,7 @@ fn request() -> CanonicalRequest {
         messages: vec![Message::text(Role::User, "hello")],
         max_output_tokens: 128,
         temperature: None,
+        top_p: None,
         stream: true,
         tools: Vec::new(),
         tool_choice: ToolChoice::Auto,
@@ -113,6 +121,7 @@ fn unhealthy_primary_routes_to_healthy_backup() -> Result<(), Box<dyn std::error
             ("primary-route".to_owned(), HealthStatus::Unhealthy),
             ("backup-route".to_owned(), HealthStatus::Healthy),
         ]),
+        latency_ms: BTreeMap::new(),
         excluded_upstreams: HashSet::new(),
         previous_error: None,
     })?;
@@ -139,6 +148,7 @@ fn previous_timeout_and_exclusion_produce_explicit_failover()
             ("primary-route".to_owned(), HealthStatus::Healthy),
             ("backup-route".to_owned(), HealthStatus::Healthy),
         ]),
+        latency_ms: BTreeMap::new(),
         excluded_upstreams: HashSet::from(["primary-route".to_owned()]),
         previous_error: Some(StandardError::ProviderTimeout),
     })?;
@@ -184,6 +194,7 @@ fn metadata_condition_selects_only_matching_upstream() -> Result<(), Box<dyn std
         publisher_id: "local-ai".to_owned(),
         request: request(),
         health: BTreeMap::new(),
+        latency_ms: BTreeMap::new(),
         excluded_upstreams: HashSet::new(),
         previous_error: None,
     })?;
@@ -197,6 +208,7 @@ fn metadata_condition_selects_only_matching_upstream() -> Result<(), Box<dyn std
         publisher_id: "local-ai".to_owned(),
         request: matching,
         health: BTreeMap::new(),
+        latency_ms: BTreeMap::new(),
         excluded_upstreams: HashSet::new(),
         previous_error: None,
     })?;

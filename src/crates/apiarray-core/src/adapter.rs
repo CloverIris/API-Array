@@ -319,6 +319,7 @@ fn openai_request(request: &CanonicalRequest) -> Result<Value, CoreError> {
         "stream": request.stream,
     });
     insert_optional_number(&mut body, "temperature", request.temperature);
+    insert_optional_number(&mut body, "top_p", request.top_p);
     if !request.tools.is_empty() {
         body["tools"] = Value::Array(
             request
@@ -430,6 +431,7 @@ fn anthropic_request(request: &CanonicalRequest) -> Value {
         body["system"] = Value::String(system);
     }
     insert_optional_number(&mut body, "temperature", request.temperature);
+    insert_optional_number(&mut body, "top_p", request.top_p);
     if !request.tools.is_empty() {
         body["tools"] = Value::Array(
             request
@@ -509,6 +511,7 @@ fn gemini_request(request: &CanonicalRequest) -> Result<Value, CoreError> {
         .collect::<Result<_, CoreError>>()?;
     let mut generation = json!({"maxOutputTokens": request.max_output_tokens});
     insert_optional_number(&mut generation, "temperature", request.temperature);
+    insert_optional_number(&mut generation, "topP", request.top_p);
     if matches!(
         request.response_format,
         ResponseFormat::JsonObject | ResponseFormat::JsonSchema { .. }
@@ -794,6 +797,7 @@ mod tests {
             ],
             max_output_tokens: 128,
             temperature: Some(0.2),
+            top_p: None,
             stream: true,
             tools: vec![ToolDefinition {
                 name: "weather".to_owned(),

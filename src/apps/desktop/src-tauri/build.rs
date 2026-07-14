@@ -6,7 +6,9 @@ use std::{
 };
 
 fn collect_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(directory) else { return };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -25,7 +27,9 @@ fn ui_build_id() -> String {
     let mut hasher = DefaultHasher::new();
     for path in files {
         path.strip_prefix(root).unwrap_or(&path).hash(&mut hasher);
-        if let Ok(bytes) = fs::read(&path) { bytes.hash(&mut hasher); }
+        if let Ok(bytes) = fs::read(&path) {
+            bytes.hash(&mut hasher);
+        }
     }
     format!("{:016x}", hasher.finish())
 }

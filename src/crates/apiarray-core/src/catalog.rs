@@ -31,9 +31,11 @@ mod tests {
     fn ships_the_four_first_release_provider_manifests() -> Result<(), CoreError> {
         let manifests = builtin_provider_manifests()?;
         assert_eq!(manifests.len(), BUILTIN_PROVIDER_IDS.len());
-        assert!(manifests.iter().all(|manifest| {
-            BUILTIN_PROVIDER_IDS.contains(&manifest.provider.id.as_str())
-        }));
+        assert!(
+            manifests
+                .iter()
+                .all(|manifest| { BUILTIN_PROVIDER_IDS.contains(&manifest.provider.id.as_str()) })
+        );
         Ok(())
     }
 }

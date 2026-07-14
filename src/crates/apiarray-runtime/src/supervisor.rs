@@ -413,16 +413,22 @@ mod tests {
                                 timeout_ms: 1_000,
                                 max_retries: 0,
                                 failover_on: HashSet::new(),
+                                selection_strategy:
+                                    apiarray_core::routing::SelectionStrategy::PriorityFailover,
+                                latency_hysteresis_ms: 25,
                             },
                             upstreams: vec![UpstreamRoute {
                                 id: "upstream".to_owned(),
                                 provider_instance: "provider".to_owned(),
                                 upstream_model: "model".to_owned(),
                                 priority: 0,
+                                weight: 1,
                                 enabled: true,
                                 conditions: Vec::new(),
+                                billing: Default::default(),
                             }],
                         }],
+                        middleware: Vec::new(),
                     },
                 )]),
             }

@@ -45,6 +45,13 @@ pub fn parse_chat_completions_request(value: &Value) -> Result<CanonicalRequest,
                     .map_err(|error| request_error(format!("temperature 无效: {error}")))
             })
             .transpose()?,
+        top_p: value
+            .get("top_p")
+            .map(|top_p| {
+                serde_json::from_value::<f32>(top_p.clone())
+                    .map_err(|error| request_error(format!("top_p 无效: {error}")))
+            })
+            .transpose()?,
         stream: value
             .get("stream")
             .and_then(Value::as_bool)

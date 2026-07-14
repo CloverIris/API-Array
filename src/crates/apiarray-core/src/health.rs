@@ -30,6 +30,8 @@ pub struct EndpointHealth {
     #[serde(default)]
     pub last_latency_ms: Option<u64>,
     #[serde(default)]
+    pub ewma_latency_ms: Option<u64>,
+    #[serde(default)]
     pub last_error: Option<StandardError>,
     pub observation_count: u64,
 }
@@ -108,6 +110,7 @@ impl EndpointHealth {
             consecutive_successes: 0,
             consecutive_failures: 0,
             last_latency_ms: None,
+            ewma_latency_ms: None,
             last_error: None,
             observation_count: 0,
         }
@@ -134,6 +137,12 @@ impl EndpointHealth {
         let previous = self.status;
         self.observation_count = self.observation_count.saturating_add(1);
         self.last_latency_ms = observation.latency_ms;
+        if let Some(latency) = observation.latency_ms {
+            self.ewma_latency_ms = Some(self.ewma_latency_ms.map_or(latency, |current| {
+                // alpha = 0.25; integer arithmetic keeps snapshots deterministic.
+                current.saturating_mul(3).saturating_add(latency) / 4
+            }));
+        }
         if observation.success {
             self.consecutive_successes = self.consecutive_successes.saturating_add(1);
             self.consecutive_failures = 0;

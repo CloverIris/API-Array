@@ -13,6 +13,8 @@ pub struct CanonicalRequest {
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
     pub stream: bool,
     #[serde(default)]
     pub tools: Vec<ToolDefinition>,
@@ -207,6 +209,16 @@ impl CanonicalRequest {
                 ));
             }
         }
+        if self
+            .top_p
+            .is_some_and(|top_p| !(0.0..=1.0).contains(&top_p))
+        {
+            issues.push(ValidationIssue::new(
+                "top_p",
+                "OUT_OF_RANGE",
+                "Top P 必须在 0 到 1 之间",
+            ));
+        }
         for (key, value) in &self.metadata {
             if key.trim().is_empty() || key.len() > 64 || value.len() > 256 {
                 issues.push(ValidationIssue::new(
@@ -256,6 +268,7 @@ mod tests {
             messages: vec![Message::text(Role::User, "hello")],
             max_output_tokens: 128,
             temperature: Some(0.2),
+            top_p: None,
             stream: false,
             tools: Vec::new(),
             tool_choice: ToolChoice::Auto,
@@ -273,6 +286,7 @@ mod tests {
             messages: vec![Message::text(Role::Tool, "result")],
             max_output_tokens: 128,
             temperature: None,
+            top_p: None,
             stream: false,
             tools: Vec::new(),
             tool_choice: ToolChoice::Auto,

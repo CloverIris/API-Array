@@ -34,6 +34,9 @@ fn quit_application(app: &AppHandle) {
         if let Some(gateway) = app.state::<DesktopState>().gateway.lock().await.take() {
             gateway.stop().await;
         }
+        for (_, task) in std::mem::take(&mut *app.state::<DesktopState>().probe_tasks.lock().await) {
+            task.abort();
+        }
         if let Some(plane) = app.state::<DesktopState>().control_plane.lock().await.clone() {
             plane.shutdown().await;
         }
@@ -174,12 +177,15 @@ pub fn run() {
                     },
                 )?,
                 paused_probes: Mutex::new(BTreeSet::new()),
+                probe_health: Mutex::new(BTreeMap::new()),
+                probe_tasks: Mutex::new(BTreeMap::new()),
                 repository: ActiveWorkspace::new(repository, launcher),
                 secret_store,
                 control_plane: Mutex::new(control_plane),
                 gateway: Mutex::new(None),
                 gateway_error: Mutex::new(None),
                 startup_error: Mutex::new(startup_error),
+                workspace_mutation: Mutex::new(()),
                 is_quitting: AtomicBool::new(false),
             });
             install_application_tray(&app.handle())?;
@@ -193,6 +199,7 @@ pub fn run() {
             if has_workspace {
                 let state = app.state::<DesktopState>();
                 let _ = tauri::async_runtime::block_on(restart_gateway(&state));
+                tauri::async_runtime::block_on(restore_canvas_probe_schedules(&state));
             }
             eprintln!("API ARRAY desktop host ready; embedded Rust Runtime is in-process; gateway={}", if has_workspace { "configured" } else { "waiting for workspace" });
             Ok(())
@@ -242,7 +249,14 @@ pub fn run() {
             canvas_graph,
             canvas_snapshot,
             save_canvas_graph,
+            graph_node_catalog,
+            apply_canvas_template,
             compile_canvas_graph,
+            simulate_canvas_route,
+            validate_canvas_runtime,
+            run_canvas_probe,
+            set_canvas_probe_schedule,
+            canvas_runtime_snapshot,
             canvas_node_impact,
             commit_wallet_placement,
             run_canvas,
@@ -280,6 +294,7 @@ pub fn run() {
             save_desktop_notification_preference,
             export_workspace,
             import_workspace,
+            gateway_status,
             workspace_storage_status,
             update_gateway_settings,
             workspace_locations,
@@ -291,6 +306,7 @@ pub fn run() {
             backup_workspace,
             compact_workspace,
             initialize_workspace,
+            reset_workspace_for_graph_v3,
             start_publisher,
             pause_publisher,
             stop_publisher,

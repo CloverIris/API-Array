@@ -20,8 +20,10 @@ pub enum RuntimeErrorCode {
     AuditUnavailable,
     SecretStoreUnavailable,
     WorkspaceStorageUnavailable,
+    WorkspaceConflict,
     PublisherAlreadyRunning,
     PublisherNotRunning,
+    RateLimited,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

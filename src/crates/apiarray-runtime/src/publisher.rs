@@ -2,6 +2,7 @@ use crate::resilience::{AuditSink, ExecutedStream, NoopAuditSink, ResilientExecu
 use crate::secret::SecretResolver;
 use crate::transport::HttpExecutor;
 use crate::{RuntimeError, RuntimeErrorCode};
+use apiarray_core::graph::MiddlewareKind;
 use apiarray_core::openai::{
     OpenAiStreamEncoder, encode_chat_completions_response, parse_chat_completions_request,
 };
@@ -19,9 +20,9 @@ use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -32,6 +33,30 @@ pub struct PublisherState {
     publisher_id: String,
     secrets: Arc<dyn SecretResolver>,
     executor: ResilientExecutor,
+    rate_limit: Option<RateLimitState>,
+}
+
+#[derive(Clone)]
+struct RateLimitState {
+    requests_per_minute: u32,
+    max_concurrent: u32,
+    window: Arc<Mutex<RateWindow>>,
+    concurrent: Arc<AtomicU32>,
+}
+
+struct RateWindow {
+    started: Instant,
+    requests: u32,
+}
+
+struct ConcurrencyGuard(Option<RateLimitState>);
+
+impl Drop for ConcurrencyGuard {
+    fn drop(&mut self) {
+        if let Some(state) = &self.0 {
+            state.concurrent.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
 }
 
 impl PublisherState {
@@ -59,16 +84,77 @@ impl PublisherState {
         secrets: Arc<dyn SecretResolver>,
         audit: Arc<dyn AuditSink>,
     ) -> Self {
+        let publisher_id = publisher_id.into();
+        let rate_limit = runtime
+            .publisher_middleware(&publisher_id)
+            .iter()
+            .find_map(|config| {
+                if let MiddlewareKind::RateLimit {
+                    requests_per_minute,
+                    max_concurrent,
+                } = config.middleware
+                {
+                    Some(RateLimitState {
+                        requests_per_minute,
+                        max_concurrent,
+                        window: Arc::new(Mutex::new(RateWindow {
+                            started: Instant::now(),
+                            requests: 0,
+                        })),
+                        concurrent: Arc::new(AtomicU32::new(0)),
+                    })
+                } else {
+                    None
+                }
+            });
         Self {
             runtime,
-            publisher_id: publisher_id.into(),
+            publisher_id,
             executor: ResilientExecutor::new(transport, Arc::clone(&secrets), audit),
             secrets,
+            rate_limit,
         }
+    }
+
+    fn acquire_request(&self) -> Result<ConcurrencyGuard, RuntimeError> {
+        let Some(state) = &self.rate_limit else {
+            return Ok(ConcurrencyGuard(None));
+        };
+        let previous = state.concurrent.fetch_add(1, Ordering::AcqRel);
+        if previous >= state.max_concurrent {
+            state.concurrent.fetch_sub(1, Ordering::AcqRel);
+            return Err(RuntimeError::new(
+                RuntimeErrorCode::RateLimited,
+                "编组方案并发限制已达到",
+            ));
+        }
+        let mut window = state
+            .window
+            .lock()
+            .map_err(|_| RuntimeError::new(RuntimeErrorCode::RateLimited, "限流状态暂时不可用"))?;
+        if window.started.elapsed() >= Duration::from_secs(60) {
+            window.started = Instant::now();
+            window.requests = 0;
+        }
+        if window.requests >= state.requests_per_minute {
+            state.concurrent.fetch_sub(1, Ordering::AcqRel);
+            return Err(RuntimeError::new(
+                RuntimeErrorCode::RateLimited,
+                "编组方案每分钟请求限制已达到",
+            ));
+        }
+        window.requests = window.requests.saturating_add(1);
+        drop(window);
+        Ok(ConcurrencyGuard(Some(state.clone())))
     }
 
     pub async fn set_health(&self, upstream_id: impl Into<String>, status: HealthStatus) {
         self.executor.set_health(upstream_id, status).await;
+    }
+
+    #[must_use]
+    pub fn audit_healthy(&self) -> bool {
+        self.executor.audit_healthy()
     }
 
     pub fn router(self) -> Router {
@@ -83,7 +169,13 @@ impl PublisherState {
 async fn models(State(state): State<PublisherState>, headers: HeaderMap) -> Response {
     let request_id = correlation_id(&headers);
     if !state.executor.audit_healthy() {
-        return with_correlation_id(runtime_error_response(RuntimeError::new(RuntimeErrorCode::AuditUnavailable, "audit storage is unavailable")), &request_id);
+        return with_correlation_id(
+            runtime_error_response(RuntimeError::new(
+                RuntimeErrorCode::AuditUnavailable,
+                "audit storage is unavailable",
+            )),
+            &request_id,
+        );
     }
     if let Err(error) = authorize(&state, &headers) {
         return with_correlation_id(runtime_error_response(error), &request_id);
@@ -181,11 +273,21 @@ async fn chat_completions(
 ) -> Response {
     let request_id = correlation_id(&headers);
     if !state.executor.audit_healthy() {
-        return with_correlation_id(runtime_error_response(RuntimeError::new(RuntimeErrorCode::AuditUnavailable, "audit storage is unavailable")), &request_id);
+        return with_correlation_id(
+            runtime_error_response(RuntimeError::new(
+                RuntimeErrorCode::AuditUnavailable,
+                "audit storage is unavailable",
+            )),
+            &request_id,
+        );
     }
     if let Err(error) = authorize(&state, &headers) {
         return with_correlation_id(runtime_error_response(error), &request_id);
     }
+    let _request_guard = match state.acquire_request() {
+        Ok(guard) => guard,
+        Err(error) => return with_correlation_id(runtime_error_response(error), &request_id),
+    };
     let Ok(Json(payload)) = payload else {
         return with_correlation_id(
             openai_error_response(
@@ -284,7 +386,11 @@ fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Res
         adapter,
         public_model,
         mut trace,
+        billing,
+        budget_warning_thresholds,
+        pricing_model,
     } = executed;
+    trace.pricing_model = Some(pricing_model);
     let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(32);
     tokio::spawn(async move {
         let stream_started = Instant::now();
@@ -302,13 +408,27 @@ fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Res
             };
             let Ok(frames) = frames else {
                 send_stream_error(&sender).await;
-                finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
+                finish_trace(
+                    &executor,
+                    &mut trace,
+                    stream_started,
+                    TraceResult::Failure,
+                    &billing,
+                    &budget_warning_thresholds,
+                );
                 return;
             };
             for frame in frames {
                 let Ok(events) = parse_protocol_frame(adapter, &frame) else {
                     send_stream_error(&sender).await;
-                    finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
+                    finish_trace(
+                        &executor,
+                        &mut trace,
+                        stream_started,
+                        TraceResult::Failure,
+                        &billing,
+                        &budget_warning_thresholds,
+                    );
                     return;
                 };
                 if !send_stream_events(
@@ -326,6 +446,8 @@ fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Res
                         &mut trace,
                         stream_started,
                         TraceResult::ClientDisconnected,
+                        &billing,
+                        &budget_warning_thresholds,
                     );
                     return;
                 }
@@ -335,7 +457,14 @@ fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Res
             Ok(Some(frame)) => {
                 let Ok(events) = parse_protocol_frame(adapter, &frame) else {
                     send_stream_error(&sender).await;
-                    finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
+                    finish_trace(
+                        &executor,
+                        &mut trace,
+                        stream_started,
+                        TraceResult::Failure,
+                        &billing,
+                        &budget_warning_thresholds,
+                    );
                     return;
                 };
                 if !send_stream_events(
@@ -353,6 +482,8 @@ fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Res
                         &mut trace,
                         stream_started,
                         TraceResult::ClientDisconnected,
+                        &billing,
+                        &budget_warning_thresholds,
                     );
                     return;
                 }
@@ -360,7 +491,14 @@ fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Res
             Ok(None) => {}
             Err(_) => {
                 send_stream_error(&sender).await;
-                finish_trace(&executor, &mut trace, stream_started, TraceResult::Failure);
+                finish_trace(
+                    &executor,
+                    &mut trace,
+                    stream_started,
+                    TraceResult::Failure,
+                    &billing,
+                    &budget_warning_thresholds,
+                );
                 return;
             }
         }
@@ -378,10 +516,19 @@ fn stream_response(executed: ExecutedStream, executor: ResilientExecutor) -> Res
                 &mut trace,
                 stream_started,
                 TraceResult::ClientDisconnected,
+                &billing,
+                &budget_warning_thresholds,
             );
             return;
         }
-        finish_trace(&executor, &mut trace, stream_started, TraceResult::Success);
+        finish_trace(
+            &executor,
+            &mut trace,
+            stream_started,
+            TraceResult::Success,
+            &billing,
+            &budget_warning_thresholds,
+        );
     });
 
     Response::builder()
@@ -404,12 +551,30 @@ fn finish_trace(
     trace: &mut crate::resilience::ExecutionTrace,
     started: Instant,
     result: TraceResult,
+    billing: &apiarray_core::workspace::BillingPolicy,
+    warning_thresholds: &[u8],
 ) {
     trace.total_latency_ms = trace.total_latency_ms.saturating_add(elapsed_ms(started));
     trace.result = result;
     if result == TraceResult::Failure {
         trace.final_error = Some(StandardError::InvalidResponse);
     }
+    let usage = apiarray_core::canonical::Usage {
+        input_tokens: trace.input_tokens.unwrap_or(0),
+        output_tokens: trace.output_tokens.unwrap_or(0),
+        cached_input_tokens: trace.cached_input_tokens,
+    };
+    let pricing_model = trace
+        .pricing_model
+        .clone()
+        .unwrap_or_else(|| trace.public_model.clone());
+    crate::resilience::apply_usage_accounting(
+        trace,
+        &usage,
+        billing,
+        warning_thresholds,
+        &pricing_model,
+    );
     executor.record(trace);
 }
 
@@ -505,6 +670,7 @@ fn runtime_error_response(error: RuntimeError) -> Response {
     } = error;
     let status = match code {
         RuntimeErrorCode::PublisherUnauthorized => StatusCode::UNAUTHORIZED,
+        RuntimeErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
         RuntimeErrorCode::CoreRejected => StatusCode::BAD_REQUEST,
         RuntimeErrorCode::SecretUnavailable
         | RuntimeErrorCode::EnvironmentInvalid
@@ -514,9 +680,9 @@ fn runtime_error_response(error: RuntimeError) -> Response {
         | RuntimeErrorCode::AuditUnavailable
         | RuntimeErrorCode::SecretStoreUnavailable
         | RuntimeErrorCode::WorkspaceStorageUnavailable => StatusCode::INTERNAL_SERVER_ERROR,
-        RuntimeErrorCode::PublisherAlreadyRunning | RuntimeErrorCode::PublisherNotRunning => {
-            StatusCode::CONFLICT
-        }
+        RuntimeErrorCode::PublisherAlreadyRunning
+        | RuntimeErrorCode::PublisherNotRunning
+        | RuntimeErrorCode::WorkspaceConflict => StatusCode::CONFLICT,
         RuntimeErrorCode::UpstreamFailed
         | RuntimeErrorCode::ResponseTooLarge
         | RuntimeErrorCode::ResponseInvalid => StatusCode::BAD_GATEWAY,

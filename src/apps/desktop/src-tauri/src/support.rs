@@ -21,6 +21,119 @@ fn load_workspace(repository: &impl RepositoryAccess) -> Result<WorkspacePackage
     Ok(*workspace)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct WorkspaceChangeOptions {
+    reload_control_plane: bool,
+    rebuild_gateway: bool,
+}
+
+impl WorkspaceChangeOptions {
+    const STORAGE_ONLY: Self = Self {
+        reload_control_plane: false,
+        rebuild_gateway: false,
+    };
+
+    const CONFIGURATION: Self = Self {
+        reload_control_plane: true,
+        rebuild_gateway: true,
+    };
+
+    const PROJECTS: Self = Self {
+        reload_control_plane: true,
+        rebuild_gateway: false,
+    };
+}
+
+/// Serializes a complete workspace mutation and compensates the persisted
+/// workspace if the Runtime or LocalGateway cannot accept the new snapshot.
+/// The optimistic revision check also rejects stale writes from another app
+/// window or process.
+async fn commit_workspace_change<R, F>(
+    state: &DesktopState,
+    options: WorkspaceChangeOptions,
+    mutate: F,
+) -> Result<(R, StorageTransactionResult), String>
+where
+    F: FnOnce(&mut WorkspacePackage) -> Result<R, String>,
+{
+    let _mutation = state.workspace_mutation.lock().await;
+    commit_workspace_change_locked(state, options, mutate).await
+}
+
+/// Variant for operations that must keep the same mutation lock while they
+/// update or delete a Windows credential. Callers must hold
+/// `DesktopState::workspace_mutation` for the entire operation.
+async fn commit_workspace_change_locked<R, F>(
+    state: &DesktopState,
+    options: WorkspaceChangeOptions,
+    mutate: F,
+) -> Result<(R, StorageTransactionResult), String>
+where
+    F: FnOnce(&mut WorkspacePackage) -> Result<R, String>,
+{
+    let repository = state.repository.current();
+    let expected_revision = repository.descriptor().map_err(safe_error)?.revision;
+    let previous = load_workspace(&repository)?;
+    let mut next = previous.clone();
+    let result = mutate(&mut next)?;
+    next.validate().map_err(|error| error.message)?;
+
+    if next == previous {
+        return Ok((
+            result,
+            StorageTransactionResult {
+                committed_version: expected_revision,
+                runtime_reloaded: false,
+                gateway_rebuilt: false,
+            },
+        ));
+    }
+
+    let committed_version = repository
+        .save_if_revision(&next, expected_revision)
+        .map_err(safe_error)?;
+
+    let apply_result = async {
+        if options.reload_control_plane {
+            reload_control_plane(state).await?;
+        }
+        if options.rebuild_gateway {
+            restart_gateway(state).await?;
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+
+    if let Err(apply_error) = apply_result {
+        let rollback_result = repository
+            .save_if_revision(&previous, committed_version)
+            .map_err(safe_error);
+        if rollback_result.is_ok() {
+            if options.reload_control_plane {
+                let _ = reload_control_plane(state).await;
+            }
+            if options.rebuild_gateway {
+                let _ = restart_gateway(state).await;
+            }
+            return Err(format!(
+                "运行配置未能应用，工作区已恢复到变更前状态：{apply_error}"
+            ));
+        }
+        return Err(format!(
+            "运行配置未能应用，且自动恢复失败。请立即停止修改并检查工作区：{apply_error}"
+        ));
+    }
+
+    Ok((
+        result,
+        StorageTransactionResult {
+            committed_version,
+            runtime_reloaded: options.reload_control_plane,
+            gateway_rebuilt: options.rebuild_gateway,
+        },
+    ))
+}
+
 async fn reload_control_plane(state: &DesktopState) -> Result<(), String> {
     let control_plane =
         open_control_plane(&state.repository, &state.secret_store).map_err(safe_error)?;
@@ -76,6 +189,28 @@ async fn snapshot(state: &DesktopState) -> Result<DesktopSnapshot, String> {
     })
 }
 
+async fn desktop_gateway_status(state: &DesktopState) -> Result<apiarray_runtime::gateway::GatewayStatus, String> {
+    let workspace = load_workspace(&state.repository)?;
+    let configured_address = workspace.gateway.listen_address.clone();
+    let configured_port = workspace.gateway.port;
+    let error = state.gateway_error.lock().await.clone();
+    let gateway = state.gateway.lock().await;
+    if let Some(gateway) = gateway.as_ref() {
+        return Ok(gateway.status(&configured_address, configured_port, error));
+    }
+    Ok(apiarray_runtime::gateway::GatewayStatus {
+        configured_address,
+        configured_port,
+        bound_address: None,
+        bound_port: None,
+        running: false,
+        entries: Vec::new(),
+        blocked_entries: Vec::new(),
+        duplicate_routes: Vec::new(),
+        error,
+    })
+}
+
 fn workspace_name(input: &str) -> String {
     let name = input.trim();
     if name.is_empty() {
@@ -118,12 +253,12 @@ fn empty_workspace(name: &str) -> WorkspacePackage {
 fn default_projects() -> WorkspaceProjects {
     let folder = ProjectFolder {
         id: "canvases".to_owned(),
-        name: "Canvases".to_owned(),
+        name: "默认文件夹".to_owned(),
         canvas_ids: vec!["main".to_owned()],
     };
     let canvas = Canvas {
         id: "main".to_owned(),
-        name: "Main canvas".to_owned(),
+        name: "默认编组方案".to_owned(),
         folder_id: Some(folder.id.clone()),
         graph: new_canvas_graph("main"),
         applied_graph: None,
@@ -133,7 +268,7 @@ fn default_projects() -> WorkspaceProjects {
     };
     let project = Project {
         id: "default".to_owned(),
-        name: "My project".to_owned(),
+        name: "默认项目".to_owned(),
         folders: BTreeMap::from([(folder.id.clone(), folder)]),
         canvases: BTreeMap::from([(canvas.id.clone(), canvas)]),
     };
@@ -155,6 +290,7 @@ async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
         return Ok(());
     }
     let workspace = load_workspace(&state.repository)?;
+    let configuration_revision = state.repository.current().descriptor().map_err(safe_error)?.revision;
     let entries = gateway_entries(&workspace, &state.repository, &state.secret_store)?;
     let address = gateway_socket_address(&workspace.gateway.listen_address, workspace.gateway.port)?;
     let entry_prefixes = entries.iter().map(|entry| entry.prefix.clone()).collect::<Vec<_>>();
@@ -163,20 +299,45 @@ async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
         let gateway = state.gateway.lock().await;
         if let Some(gateway) = gateway.as_ref()
             && gateway.address() == address
-            && gateway.entry_prefixes() == entry_prefixes.as_slice()
+            && gateway.configuration_revision() == configuration_revision
+            && gateway.entry_prefixes() == entry_prefixes
         {
             *state.gateway_error.lock().await = None;
             return Ok(());
         }
     }
 
-    // Build the route set before touching the current gateway. Binding the same
-    // port still requires a short hand-over, so retain the old workspace and
-    // restore it if the new listener cannot be created.
-    let previous_workspace = workspace.clone();
+    apiarray_runtime::gateway::LocalGateway::validate_entries(&entries).map_err(safe_error)?;
+
+    let same_socket_as_current = {
+        let gateway = state.gateway.lock().await;
+        gateway.as_ref().is_some_and(|gateway| gateway.address() == address)
+    };
+
+    if !same_socket_as_current {
+        // A changed port/address can be bound as a candidate while the previous
+        // listener keeps serving. Only swap after the candidate is alive.
+        return match apiarray_runtime::gateway::LocalGateway::start_with_revision(address, entries, configuration_revision).await {
+            Ok(candidate) => {
+                eprintln!("API ARRAY LocalGateway listening on {}", candidate.address());
+                let previous = state.gateway.lock().await.replace(candidate);
+                if let Some(previous) = previous { previous.stop().await; }
+                *state.gateway_error.lock().await = None;
+                Ok(())
+            }
+            Err(error) => {
+                let message = safe_error(error);
+                *state.gateway_error.lock().await = Some(message.clone());
+                Err(message)
+            }
+        };
+    }
+
+    // Same-port rebuilds cannot bind two listeners at once. We still validate
+    // the route table first, then perform the shortest possible hand-over.
     let previous = state.gateway.lock().await.take();
     if let Some(previous) = previous { previous.stop().await; }
-    match apiarray_runtime::gateway::LocalGateway::start(address, entries).await {
+    match apiarray_runtime::gateway::LocalGateway::start_with_revision(address, entries, configuration_revision).await {
         Ok(gateway) => {
             eprintln!("API ARRAY LocalGateway listening on {}", gateway.address());
             *state.gateway.lock().await = Some(gateway);
@@ -185,16 +346,6 @@ async fn restart_gateway(state: &DesktopState) -> Result<(), String> {
         }
         Err(error) => {
             let message = safe_error(error);
-            // Best-effort recovery keeps an already valid workspace reachable
-            // when a new port or route configuration is rejected.
-            if let Ok(old_entries) = gateway_entries(&previous_workspace, &state.repository, &state.secret_store) {
-                if let Ok(old_gateway) = apiarray_runtime::gateway::LocalGateway::start(
-                    gateway_socket_address(&previous_workspace.gateway.listen_address, previous_workspace.gateway.port)?,
-                    old_entries,
-                ).await {
-                    *state.gateway.lock().await = Some(old_gateway);
-                }
-            }
             *state.gateway_error.lock().await = Some(message.clone());
             Err(message)
         }
@@ -210,9 +361,21 @@ fn gateway_entries(workspace: &WorkspacePackage, repository: &impl RepositoryAcc
         let Some(provider) = runtime.providers.get(&asset.provider_instance_id) else { continue; };
         if !asset.enabled || !provider.enabled || !store.contains(&endpoint.token_ref) { continue; }
         let id = format!("direct:{}", endpoint.id);
+        let billing = endpoint
+            .billing_override
+            .clone()
+            .unwrap_or_else(|| asset.billing.clone());
+        let middleware = billing.monthly_budget_micros.map_or_else(Vec::new, |_| {
+            vec![MiddlewareConfig {
+                middleware: MiddlewareKind::BudgetMonitor {
+                    warning_thresholds: vec![50, 80, 100],
+                },
+            }]
+        });
         runtime.publishers.insert(id.clone(), RuntimePublisher {
             config: apiarray_core::publisher::PublisherConfig { schema_version: SCHEMA_VERSION, id: id.clone(), name: endpoint.name.clone(), listen_address: "127.0.0.1".parse().map_err(|_| "回环地址无效。")?, port: workspace.gateway.port, base_path: "/v1".to_owned(), require_token: true, token_ref: Some(endpoint.token_ref.clone()) },
-            routes: endpoint.models.iter().map(|mapping| ModelRoute { public_model: mapping.public_model.clone(), policy: RoutePolicy { schema_version: SCHEMA_VERSION, id: format!("{id}-{}-route", mapping.public_model), timeout_ms: endpoint.timeout_ms, max_retries: endpoint.max_retries, failover_on: HashSet::from([StandardError::ProviderTimeout, StandardError::NetworkUnreachable, StandardError::RateLimited]) }, upstreams: vec![UpstreamRoute { id: format!("{id}-{}-upstream", mapping.public_model), provider_instance: asset.provider_instance_id.clone(), upstream_model: mapping.upstream_model.clone(), priority: 0, enabled: true, conditions: Vec::new() }] }).collect(),
+            routes: endpoint.models.iter().map(|mapping| ModelRoute { public_model: mapping.public_model.clone(), policy: RoutePolicy { schema_version: SCHEMA_VERSION, id: format!("{id}-{}-route", mapping.public_model), timeout_ms: endpoint.timeout_ms, max_retries: endpoint.max_retries, failover_on: HashSet::from([StandardError::ProviderTimeout, StandardError::NetworkUnreachable, StandardError::RateLimited]), selection_strategy: SelectionStrategy::PriorityFailover, latency_hysteresis_ms: 25 }, upstreams: vec![UpstreamRoute { id: format!("{id}-{}-upstream", mapping.public_model), provider_instance: asset.provider_instance_id.clone(), upstream_model: mapping.upstream_model.clone(), priority: 0, weight: 1, enabled: true, conditions: Vec::new(), billing: billing.clone() }] }).collect(),
+            middleware,
         });
         prefixes.push((format!("/direct/{}", endpoint.alias), id));
     }
@@ -223,6 +386,7 @@ fn gateway_entries(workspace: &WorkspacePackage, repository: &impl RepositoryAcc
                     .map_err(|error| format!("Canvas {}/{} compilation blocked: {}", project.id, canvas.id, error.message))?;
                 if let Some(publisher) = runtime.publishers.get_mut(publisher_id) {
                     publisher.routes = compiled.routes;
+                    publisher.middleware = compiled.middleware;
                 } else {
                     return Err(format!("Canvas {}/{} references a missing Publisher", project.id, canvas.id));
                 }
@@ -236,35 +400,15 @@ fn gateway_entries(workspace: &WorkspacePackage, repository: &impl RepositoryAcc
     let audit: Arc<dyn apiarray_runtime::resilience::AuditSink> = Arc::new(SqliteAuditSink::new(repository));
     let resolver: Arc<dyn apiarray_runtime::secret::SecretResolver> = Arc::new(StoreSecretResolver::new(store.clone()));
     let transport = apiarray_runtime::transport::HttpExecutor::new(TransportConfig::default()).map_err(safe_error)?;
-    Ok(prefixes.into_iter().map(|(prefix, publisher_id)| apiarray_runtime::gateway::GatewayEntry { prefix, state: apiarray_runtime::publisher::PublisherState::with_audit(Arc::clone(&compiled), publisher_id, transport.clone(), Arc::clone(&resolver), Arc::clone(&audit)) }).collect())
+    Ok(prefixes.into_iter().map(|(prefix, publisher_id)| apiarray_runtime::gateway::GatewayEntry {
+        prefix,
+        publisher_id: publisher_id.clone(),
+        state: apiarray_runtime::publisher::PublisherState::with_audit(Arc::clone(&compiled), publisher_id, transport.clone(), Arc::clone(&resolver), Arc::clone(&audit)),
+    }).collect())
 }
 
 fn new_canvas_graph(id: &str) -> WorkflowGraph {
-    WorkflowGraph {
-        schema_version: GRAPH_SCHEMA_VERSION,
-        id: id.to_owned(),
-        nodes: vec![Node {
-            id: "composer".to_owned(),
-            name: "Composer".to_owned(),
-            kind: NodeKind::Composer,
-            enabled: true,
-            inputs: vec![Port { id: "candidate_in".to_owned(), data_type: PortType::Candidate }, Port { id: "health_in".to_owned(), data_type: PortType::HealthSignal }],
-            outputs: vec![Port { id: "service_plan_out".to_owned(), data_type: PortType::ServicePlan }],
-            config: serde_json::json!({"strategy":"priority_failover","timeout_ms":30000,"max_retries":2,"allow_capability_degradation":false}),
-        }, Node {
-            id: "total-output".to_owned(),
-            name: "Local total output".to_owned(),
-            kind: NodeKind::Publisher,
-            enabled: true,
-            inputs: vec![Port {
-                id: "service_plan_in".to_owned(),
-                data_type: PortType::ServicePlan,
-            }],
-            outputs: Vec::new(),
-            config: serde_json::json!({"publisher_id": null, "status": "not_published"}),
-        }],
-        edges: vec![Edge { id: "composer-to-output".to_owned(), from: Endpoint { node: "composer".to_owned(), port: "service_plan_out".to_owned() }, to: Endpoint { node: "total-output".to_owned(), port: "service_plan_in".to_owned() } }],
-    }
+    core_new_canvas_graph(id)
 }
 
 fn unique_map_id<T>(items: &BTreeMap<String, T>, base: &str) -> String {
@@ -343,6 +487,18 @@ fn limited_name(input: &str, fallback: &str) -> String {
     value.chars().take(80).collect()
 }
 
+fn staged_secret_ref(scope: &str, object_id: &str, field: &str) -> Result<SecretRef, String> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    SecretRef::parse(format!(
+        "secret://{scope}/{object_id}/{field}-rotate-{}-{nonce}",
+        std::process::id()
+    ))
+    .map_err(|error| error.message)
+}
+
 fn unique_node_id(graph: &WorkflowGraph, base: &str) -> String {
     let ids = graph
         .nodes
@@ -383,12 +539,15 @@ async fn save_projects_workspace(
     state: &DesktopState,
     workspace: WorkspacePackage,
 ) -> Result<ProjectTreeSnapshot, String> {
-    workspace.validate().map_err(|error| error.message)?;
     ensure_no_running_publishers(state).await?;
-    state.repository.save(&workspace).map_err(safe_error)?;
-    reload_control_plane(state).await?;
+    let projects = workspace.projects.clone();
+    commit_workspace_change(state, WorkspaceChangeOptions::PROJECTS, move |current| {
+        current.projects = workspace.projects;
+        Ok(())
+    })
+    .await?;
     Ok(ProjectTreeSnapshot {
-        projects: workspace.projects,
+        projects,
     })
 }
 

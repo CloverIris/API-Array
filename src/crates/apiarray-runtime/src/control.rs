@@ -1,4 +1,4 @@
-﻿use crate::persistence::{WorkspaceRecovery, WorkspaceRepository};
+use crate::persistence::{WorkspaceRecovery, WorkspaceRepository};
 use crate::resilience::AuditSink;
 use crate::secret::{SecretStore, StoreSecretResolver};
 use crate::supervisor::{PublisherRuntimeStatus, PublisherSupervisor, SupervisorSnapshot};
@@ -35,10 +35,10 @@ pub struct ControlPlane {
 }
 
 impl ControlPlane {
-    /// 浠庢湰鍦板伐浣滃尯鎵撳紑涓€涓彲杩愯浼氳瘽锛涙湭鐭?Schema 鍙宸ヤ綔鍖轰笉浼氬惎鍔?Runtime銆?    ///
+    /// 从本地工作区打开可运行会话；不支持的 Schema 不会启动 Runtime。
     /// # Errors
     ///
-    /// 宸ヤ綔鍖轰笉瀛樺湪銆佸彧璇汇€侀厤缃棤鏁堟垨 Runtime 鍒濆鍖栧け璐ユ椂杩斿洖閿欒銆?
+    /// 工作区不存在、配置无效或 Runtime 初始化失败时返回错误。
     pub fn open(
         repository: WorkspaceRepository,
         secret_store: Arc<dyn SecretStore>,
@@ -62,7 +62,7 @@ impl ControlPlane {
         })
     }
 
-    /// 鍚姩宸ヤ綔鍖轰腑涓婃淇濇寔鍚敤鐨?Publisher銆傜己灏?Secret 鐨?Publisher 浼氳淇濈暀涓烘湭鍚姩銆?
+    /// 恢复工作区中保留运行意图的 Publisher；缺少 Secret 的入口保持停止。
     pub async fn restore_enabled(&self) -> Vec<(String, RuntimeError)> {
         let workspace = self.workspace.lock().await.clone();
         let availability = self.secret_status(&workspace);
@@ -85,7 +85,7 @@ impl ControlPlane {
                     id.clone(),
                     RuntimeError::new(
                         RuntimeErrorCode::SecretUnavailable,
-                        "Publisher 缂哄皯鏈満 Secret锛屾湭鎭㈠杩愯",
+                        "Publisher 缺少本机 Secret，未恢复运行",
                     ),
                 )
             })
@@ -103,10 +103,10 @@ impl ControlPlane {
         errors
     }
 
-    /// 淇濆瓨 Secret 鍚庝笉鎶婃槑鏂囧啓鍏ュ伐浣滃尯閰嶇疆銆?    ///
+    /// 保存 Secret，但绝不把明文写入工作区配置。
     /// # Errors
     ///
-    /// 绯荤粺鍑嵁搴撲笉鍙敤鏃惰繑鍥為敊璇€?
+    /// 系统凭据存储不可用时返回错误。
     pub fn store_secret(
         &self,
         reference: &apiarray_core::secret::SecretRef,
@@ -123,7 +123,7 @@ impl ControlPlane {
     /// 鍚姩骞惰褰曡嚜鍔ㄦ仮澶嶆剰鍥俱€?    ///
     /// # Errors
     ///
-    /// Publisher 缂哄皯 Secret銆侀厤缃寔涔呭寲澶辫触鎴栧惎鍔ㄥけ璐ユ椂杩斿洖閿欒銆?
+    /// Publisher 缺少 Secret、配置持久化失败或启动失败时返回错误。
     pub async fn start_publisher(
         &self,
         publisher_id: &str,
@@ -141,7 +141,7 @@ impl ControlPlane {
     /// 鏆傚仠 Publisher 骞剁Щ闄よ嚜鍔ㄦ仮澶嶆剰鍥俱€?    ///
     /// # Errors
     ///
-    /// Publisher 鏈繍琛屾垨宸ヤ綔鍖烘棤娉曚繚瀛樻椂杩斿洖閿欒銆?
+    /// Publisher 未运行或工作区无法保存时返回错误。
     pub async fn pause_publisher(
         &self,
         publisher_id: &str,
@@ -153,7 +153,7 @@ impl ControlPlane {
     /// 鍋滄 Publisher 骞剁Щ闄よ嚜鍔ㄦ仮澶嶆剰鍥俱€?    ///
     /// # Errors
     ///
-    /// Publisher 鏈繍琛屾垨宸ヤ綔鍖烘棤娉曚繚瀛樻椂杩斿洖閿欒銆?
+    /// Publisher 未运行或工作区无法保存时返回错误。
     pub async fn stop_publisher(
         &self,
         publisher_id: &str,
@@ -263,7 +263,9 @@ mod tests {
     use super::*;
     use crate::secret::MemorySecretStore;
     use apiarray_core::runtime::RuntimeConfig;
-    use apiarray_core::workspace::{ApiWallet, WorkspaceProjects, WorkspaceRuntimeState, WORKSPACE_SCHEMA_VERSION};
+    use apiarray_core::workspace::{
+        ApiWallet, WORKSPACE_SCHEMA_VERSION, WorkspaceProjects, WorkspaceRuntimeState,
+    };
     use serde_json::Value;
     use std::collections::BTreeMap;
 

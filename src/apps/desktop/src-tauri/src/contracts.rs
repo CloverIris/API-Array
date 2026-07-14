@@ -213,6 +213,23 @@ struct ProbePauseInput {
     paused: bool,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct CanvasProbeInput {
+    project_id: String,
+    canvas_id: String,
+    probe_node_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CanvasProbeScheduleInput {
+    project_id: String,
+    canvas_id: String,
+    probe_node_id: String,
+    enabled: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublisherInput {
@@ -509,7 +526,26 @@ struct MoveCanvasInput {
 struct SaveCanvasGraphInput {
     project_id: String,
     canvas_id: String,
+    expected_draft_revision: u64,
     graph: WorkflowGraph,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyCanvasTemplateInput {
+    project_id: String,
+    canvas_id: String,
+    expected_draft_revision: u64,
+    template: GraphTemplateKind,
+    asset_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SimulateCanvasRouteInput {
+    project_id: String,
+    canvas_id: String,
+    public_model: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -545,4 +581,29 @@ struct CanvasPublisherSnapshot {
     message: Option<String>,
     base_url: String,
     public_models: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanvasRuntimeSnapshotView {
+    project_id: String,
+    canvas_id: String,
+    draft_revision: u64,
+    applied_revision: u64,
+    stale_runtime: bool,
+    publisher_running: bool,
+    strategy: SelectionStrategy,
+    providers: Vec<ProviderRuntimeHealthView>,
+    preferred_candidates: BTreeMap<String, String>,
+    middleware: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderRuntimeHealthView {
+    provider_node_id: String,
+    upstream_id: String,
+    status: HealthStatus,
+    latency_ewma_ms: Option<u64>,
+    consecutive_failures: u32,
 }

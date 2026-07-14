@@ -15,6 +15,9 @@ async fn create_canvas_publisher(
         return Err("Canvas already has a Publisher".to_owned());
     }
     let compiled = compile_graph(&canvas.graph, &workspace.wallet, &workspace.runtime).map_err(|error| error.message)?;
+    if !compiled.report.valid {
+        return Err(compiled.report.errors.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>().join("；"));
+    }
     if input.token.trim().is_empty() {
         return Err("Publisher Token 不能为空。".to_owned());
     }
@@ -42,6 +45,7 @@ async fn create_canvas_publisher(
                 token_ref: Some(token_ref.clone()),
             },
             routes: compiled.routes,
+            middleware: compiled.middleware,
         },
     );
     let canvas = workspace
@@ -58,7 +62,7 @@ async fn create_canvas_publisher(
         .iter_mut()
         .find(|node| node.kind == NodeKind::Publisher)
     {
-        output.config = serde_json::json!({"publisher_id": publisher_id, "status": "ready"});
+        output.config = NodeConfig::Publisher(PublisherNodeConfig { publisher_id: Some(publisher_id) });
     }
     workspace.validate().map_err(|error| error.message)?;
     state
@@ -91,7 +95,7 @@ async fn delete_publisher(
             if canvas.publisher_id.as_deref() == Some(publisher_id.as_str()) {
                 canvas.publisher_id = None;
                 if let Some(output) = canvas.graph.nodes.iter_mut().find(|node| node.kind == NodeKind::Publisher) {
-                    output.config = serde_json::json!({"publisher_id": null, "status": "not_published"});
+                    output.config = NodeConfig::Publisher(PublisherNodeConfig::default());
                 }
                 canvas.draft_revision = canvas.draft_revision.saturating_add(1);
             }

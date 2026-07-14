@@ -2,10 +2,14 @@ use crate::secret::SecretResolver;
 use crate::transport::HttpExecutor;
 use crate::{RuntimeError, RuntimeErrorCode};
 use apiarray_core::adapter::{AdapterKind, parse_response};
-use apiarray_core::canonical::{CanonicalRequest, CanonicalResponse};
+use apiarray_core::canonical::{CanonicalRequest, CanonicalResponse, Usage};
+use apiarray_core::events::{
+    AggregatedNotification, HealthTransition, NotificationEvent, NotificationLevel,
+};
 use apiarray_core::health::{EndpointHealth, HealthObservation, HealthPolicy};
-use apiarray_core::routing::{HealthStatus, StandardError};
-use apiarray_core::runtime::{CompiledRuntime, DispatchPlan, DispatchRequest};
+use apiarray_core::routing::{HealthStatus, RouteReason, SelectionStrategy, StandardError};
+use apiarray_core::runtime::{CompiledRuntime, DispatchPlan, DispatchRequest, estimate_usage_cost};
+use apiarray_core::workspace::{BillingPolicy, PricingRuleSource};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
@@ -39,6 +43,8 @@ pub struct AttemptAudit {
     pub provider_instance: String,
     pub latency_ms: u64,
     pub result: AttemptResult,
+    pub selection_strategy: SelectionStrategy,
+    pub route_reason: RouteReason,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<StandardError>,
 }
@@ -69,6 +75,12 @@ pub struct ExecutionTrace {
     pub attempts: Vec<AttemptAudit>,
     pub retry_count: u32,
     pub failover_count: u32,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_strategy: Option<SelectionStrategy>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_upstream_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,6 +89,20 @@ pub struct ExecutionTrace {
     pub cached_input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_hit: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_currency: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_rule_source: Option<PricingRuleSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_rule_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_budget_micros: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub budget_warning_thresholds: Vec<u8>,
 }
 
 pub trait AuditSink: Send + Sync {
@@ -108,11 +134,68 @@ pub struct SqliteAuditSink {
 
 impl SqliteAuditSink {
     #[must_use]
-    pub fn new(repository: crate::persistence::WorkspaceRepository) -> Self { Self { repository } }
+    pub fn new(repository: crate::persistence::WorkspaceRepository) -> Self {
+        Self { repository }
+    }
 }
 
 impl AuditSink for SqliteAuditSink {
-    fn record(&self, trace: &ExecutionTrace) -> Result<(), RuntimeError> { self.repository.record_audit(trace) }
+    fn record(&self, trace: &ExecutionTrace) -> Result<(), RuntimeError> {
+        self.repository.record_audit(trace)?;
+        self.record_budget_notifications(trace)
+    }
+}
+
+impl SqliteAuditSink {
+    fn record_budget_notifications(&self, trace: &ExecutionTrace) -> Result<(), RuntimeError> {
+        let (Some(cost), Some(budget)) = (trace.estimated_cost_micros, trace.monthly_budget_micros)
+        else {
+            return Ok(());
+        };
+        if budget == 0 || trace.budget_warning_thresholds.is_empty() {
+            return Ok(());
+        }
+        let current = self
+            .repository
+            .estimated_cost_current_month(&trace.publisher_id)?;
+        let previous = current.saturating_sub(cost);
+        for threshold in &trace.budget_warning_thresholds {
+            let boundary = u128::from(budget)
+                .saturating_mul(u128::from(*threshold))
+                .div_ceil(100);
+            let crossed = u128::from(previous) < boundary && u128::from(current) >= boundary;
+            if !crossed {
+                continue;
+            }
+            let now = trace
+                .started_at_unix_ms
+                .saturating_add(trace.total_latency_ms);
+            let level = if *threshold >= 100 {
+                NotificationLevel::System
+            } else {
+                NotificationLevel::NotificationCenter
+            };
+            let notification = AggregatedNotification {
+                key: format!("budget:{}:{}", trace.publisher_id, threshold),
+                event: NotificationEvent {
+                    schema_version: 1,
+                    object_id: trace.publisher_id.clone(),
+                    transition: HealthTransition::BudgetWarning,
+                    occurrence_count: 1,
+                    summary: format!(
+                        "入口本月估算用量已达到预算的 {}%（仅为估算，请以供应商账单为准）",
+                        threshold
+                    ),
+                },
+                level,
+                error: None,
+                first_seen_unix_ms: now,
+                last_seen_unix_ms: now,
+            };
+            self.repository.upsert_notification(&notification)?;
+        }
+        Ok(())
+    }
 }
 
 impl JsonlAuditSink {
@@ -164,7 +247,10 @@ impl AuditSink for JsonlAuditSink {
 
 /// Reads the most recent local audit records. Invalid or interrupted lines are
 /// ignored so a partial write never makes the audit timeline unavailable.
-pub fn read_jsonl_audit(path: impl AsRef<Path>, limit: usize) -> Result<Vec<ExecutionTrace>, RuntimeError> {
+pub fn read_jsonl_audit(
+    path: impl AsRef<Path>,
+    limit: usize,
+) -> Result<Vec<ExecutionTrace>, RuntimeError> {
     let path = path.as_ref();
     if !path.is_file() {
         return Ok(Vec::new());
@@ -193,6 +279,33 @@ pub struct ExecutedStream {
     pub adapter: AdapterKind,
     pub public_model: String,
     pub trace: ExecutionTrace,
+    pub billing: BillingPolicy,
+    pub budget_warning_thresholds: Vec<u8>,
+    pub pricing_model: String,
+}
+
+/// Applies provider-reported usage and a versioned wallet pricing rule to an
+/// audit trace. This contains no request or response content.
+pub fn apply_usage_accounting(
+    trace: &mut ExecutionTrace,
+    usage: &Usage,
+    billing: &BillingPolicy,
+    warning_thresholds: &[u8],
+    pricing_model: &str,
+) {
+    trace.input_tokens = Some(usage.input_tokens);
+    trace.output_tokens = Some(usage.output_tokens);
+    trace.cached_input_tokens = usage.cached_input_tokens;
+    trace.cache_hit = usage.cached_input_tokens.map(|tokens| tokens > 0);
+    trace.monthly_budget_micros = billing.monthly_budget_micros;
+    trace.budget_warning_thresholds = warning_thresholds.to_vec();
+    if let Some(estimate) = estimate_usage_cost(billing, pricing_model, usage) {
+        trace.estimated_cost_micros = Some(estimate.estimated_cost_micros);
+        trace.cost_currency = estimate.currency;
+        trace.pricing_rule_source = Some(estimate.rule_source);
+        trace.pricing_rule_version = Some(estimate.rule_version);
+        trace.pricing_model = Some(pricing_model.to_owned());
+    }
 }
 
 #[derive(Clone)]
@@ -290,10 +403,13 @@ impl ResilientExecutor {
                     None,
                     attempts,
                 );
-                trace.input_tokens = Some(response.usage.input_tokens);
-                trace.output_tokens = Some(response.usage.output_tokens);
-                trace.cached_input_tokens = response.usage.cached_input_tokens;
-                trace.cache_hit = response.usage.cached_input_tokens.map(|tokens| tokens > 0);
+                apply_usage_accounting(
+                    &mut trace,
+                    &response.usage,
+                    &plan.billing,
+                    &plan.budget_warning_thresholds,
+                    &plan.upstream_model,
+                );
                 self.record(&trace);
                 Ok(ExecutedJson {
                     response,
@@ -363,6 +479,9 @@ impl ResilientExecutor {
                     None,
                     attempts,
                 ),
+                billing: plan.billing,
+                budget_warning_thresholds: plan.budget_warning_thresholds,
+                pricing_model: plan.upstream_model,
             }),
             Err(error) => {
                 let trace = make_trace(
@@ -398,12 +517,13 @@ impl ResilientExecutor {
         let mut previous_error = None;
         let mut last_error = None;
         loop {
-            let health = self.health_snapshot().await;
+            let (health, latency_ms) = self.health_snapshot().await;
             let plan = runtime
                 .plan_dispatch(&DispatchRequest {
                     publisher_id: publisher_id.to_owned(),
                     request: request.clone(),
                     health,
+                    latency_ms,
                     excluded_upstreams: excluded.clone(),
                     previous_error,
                 })
@@ -448,13 +568,18 @@ impl ResilientExecutor {
         }
     }
 
-    async fn health_snapshot(&self) -> BTreeMap<String, HealthStatus> {
-        self.health
-            .read()
-            .await
-            .iter()
-            .map(|(id, health)| (id.clone(), health.status))
-            .collect()
+    async fn health_snapshot(&self) -> (BTreeMap<String, HealthStatus>, BTreeMap<String, u64>) {
+        let health = self.health.read().await;
+        (
+            health
+                .iter()
+                .map(|(id, item)| (id.clone(), item.status))
+                .collect(),
+            health
+                .iter()
+                .filter_map(|(id, item)| item.ewma_latency_ms.map(|latency| (id.clone(), latency)))
+                .collect(),
+        )
     }
 
     async fn observe(
@@ -489,6 +614,8 @@ fn attempt(plan: &DispatchPlan, latency_ms: u64, error: Option<StandardError>) -
         } else {
             AttemptResult::Success
         },
+        selection_strategy: plan.selection_strategy,
+        route_reason: plan.route.reason,
         error,
     }
 }
@@ -516,6 +643,8 @@ fn make_trace(
     let failover_count = u32::try_from(unique_upstreams.saturating_sub(1)).unwrap_or(u32::MAX);
     let retry_count =
         u32::try_from(attempts.len().saturating_sub(unique_upstreams)).unwrap_or(u32::MAX);
+    let selection_strategy = attempts.last().map(|attempt| attempt.selection_strategy);
+    let final_upstream_id = attempts.last().map(|attempt| attempt.upstream_id.clone());
     ExecutionTrace {
         schema_version: 1,
         correlation_id,
@@ -530,10 +659,19 @@ fn make_trace(
         attempts,
         retry_count,
         failover_count,
+        selection_strategy,
+        final_upstream_id,
         input_tokens: None,
         output_tokens: None,
         cached_input_tokens: None,
         cache_hit: None,
+        estimated_cost_micros: None,
+        cost_currency: None,
+        pricing_rule_source: None,
+        pricing_rule_version: None,
+        pricing_model: None,
+        monthly_budget_micros: None,
+        budget_warning_thresholds: Vec::new(),
     }
 }
 
@@ -577,6 +715,64 @@ fn duration_millis(duration: std::time::Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secret::{MemorySecretStore, StoreSecretResolver};
+
+    struct FailingAuditSink;
+
+    impl AuditSink for FailingAuditSink {
+        fn record(&self, _trace: &ExecutionTrace) -> Result<(), RuntimeError> {
+            Err(RuntimeError::new(
+                RuntimeErrorCode::AuditUnavailable,
+                "audit fixture unavailable",
+            ))
+        }
+    }
+
+    fn audit_trace() -> ExecutionTrace {
+        ExecutionTrace {
+            schema_version: 1,
+            correlation_id: "req-audit-health".to_owned(),
+            publisher_id: "publisher-a".to_owned(),
+            public_model: "default".to_owned(),
+            streaming: false,
+            started_at_unix_ms: 1,
+            total_latency_ms: 1,
+            first_byte_latency_ms: None,
+            result: TraceResult::Success,
+            final_error: None,
+            attempts: Vec::new(),
+            retry_count: 0,
+            failover_count: 0,
+            selection_strategy: None,
+            final_upstream_id: None,
+            input_tokens: None,
+            output_tokens: None,
+            cached_input_tokens: None,
+            cache_hit: None,
+            estimated_cost_micros: None,
+            cost_currency: None,
+            pricing_rule_source: None,
+            pricing_rule_version: None,
+            pricing_model: None,
+            monthly_budget_micros: None,
+            budget_warning_thresholds: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn audit_failure_permanently_degrades_the_executor_snapshot() -> Result<(), RuntimeError> {
+        let store = Arc::new(MemorySecretStore::default());
+        let resolver = Arc::new(StoreSecretResolver::new(store));
+        let executor = ResilientExecutor::new(
+            HttpExecutor::new(crate::transport::TransportConfig::default())?,
+            resolver,
+            Arc::new(FailingAuditSink),
+        );
+        assert!(executor.audit_healthy());
+        executor.record(&audit_trace());
+        assert!(!executor.audit_healthy());
+        Ok(())
+    }
 
     #[test]
     fn retry_classification_is_conservative() {
@@ -603,6 +799,38 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_audit_emits_budget_notification_only_when_threshold_is_crossed() {
+        let root = std::env::temp_dir().join(format!(
+            "apiarray-budget-audit-{}-{}",
+            std::process::id(),
+            unix_millis()
+        ));
+        let repository = crate::persistence::WorkspaceRepository::new(&root);
+        let sink = SqliteAuditSink::new(repository.clone());
+        let mut trace = audit_trace();
+        trace.publisher_id = "publisher-budget".to_owned();
+        trace.started_at_unix_ms = unix_millis();
+        trace.estimated_cost_micros = Some(30);
+        trace.monthly_budget_micros = Some(100);
+        trace.budget_warning_thresholds = vec![50];
+        sink.record(&trace).expect("first audit");
+        assert!(
+            repository
+                .read_notifications(crate::persistence::NotificationQuery::default())
+                .expect("notifications")
+                .is_empty()
+        );
+        trace.started_at_unix_ms = trace.started_at_unix_ms.saturating_add(1);
+        sink.record(&trace).expect("second audit");
+        let notifications = repository
+            .read_notifications(crate::persistence::NotificationQuery::default())
+            .expect("notifications");
+        assert_eq!(notifications.len(), 1);
+        assert!(notifications[0].summary.contains("50%"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn jsonl_audit_never_serializes_content_or_transport_data() {
         let trace = ExecutionTrace {
             schema_version: 1,
@@ -620,14 +848,25 @@ mod tests {
                 provider_instance: "provider".to_owned(),
                 latency_ms: 2,
                 result: AttemptResult::Success,
+                selection_strategy: SelectionStrategy::PriorityFailover,
+                route_reason: RouteReason::PrimaryHealthy,
                 error: None,
             }],
             retry_count: 0,
             failover_count: 0,
+            selection_strategy: Some(SelectionStrategy::PriorityFailover),
+            final_upstream_id: Some("primary".to_owned()),
             input_tokens: Some(3),
             output_tokens: Some(2),
             cached_input_tokens: Some(1),
             cache_hit: Some(true),
+            estimated_cost_micros: None,
+            cost_currency: None,
+            pricing_rule_source: None,
+            pricing_rule_version: None,
+            pricing_model: None,
+            monthly_budget_micros: None,
+            budget_warning_thresholds: Vec::new(),
         };
         let value = serde_json::to_value(trace).expect("trace is serializable");
         assert!(value.get("request").is_none());
@@ -653,13 +892,28 @@ mod tests {
             attempts: Vec::new(),
             retry_count: 0,
             failover_count: 0,
+            selection_strategy: None,
+            final_upstream_id: None,
             input_tokens: None,
             output_tokens: None,
             cached_input_tokens: None,
             cache_hit: None,
+            estimated_cost_micros: None,
+            cost_currency: None,
+            pricing_rule_source: None,
+            pricing_rule_version: None,
+            pricing_model: None,
+            monthly_budget_micros: None,
+            budget_warning_thresholds: Vec::new(),
         };
-        std::fs::write(&path, format!("not-json\n{}\n", serde_json::to_string(&trace).expect("trace json")))
-            .expect("audit fixture");
+        std::fs::write(
+            &path,
+            format!(
+                "not-json\n{}\n",
+                serde_json::to_string(&trace).expect("trace json")
+            ),
+        )
+        .expect("audit fixture");
         let records = read_jsonl_audit(&path, 10).expect("records");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].correlation_id, "req-audit");

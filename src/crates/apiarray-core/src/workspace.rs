@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Provider manifests and runtime graphs deliberately remain on Core schema V1;
 /// changing the desktop workspace layout must not invalidate a provider YAML.
 /// POC reset schema. Versions 1–3 intentionally have no migration path.
-pub const WORKSPACE_SCHEMA_VERSION: u32 = 6;
+pub const WORKSPACE_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspacePackage {
@@ -88,8 +88,12 @@ pub struct DirectModelMapping {
     pub upstream_model: String,
 }
 
-const fn default_timeout_ms() -> u64 { 30_000 }
-const fn default_max_retries() -> u32 { 2 }
+const fn default_timeout_ms() -> u64 {
+    30_000
+}
+const fn default_max_retries() -> u32 {
+    2
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectGateway {
@@ -99,15 +103,24 @@ pub struct DirectGateway {
     pub port: u16,
 }
 
-const fn default_gateway_port() -> u16 { 7480 }
+const fn default_gateway_port() -> u16 {
+    7480
+}
 
-const fn default_true() -> bool { true }
+const fn default_true() -> bool {
+    true
+}
 
-fn default_gateway_address() -> String { "127.0.0.1".to_owned() }
+fn default_gateway_address() -> String {
+    "127.0.0.1".to_owned()
+}
 
 impl Default for DirectGateway {
     fn default() -> Self {
-        Self { listen_address: default_gateway_address(), port: default_gateway_port() }
+        Self {
+            listen_address: default_gateway_address(),
+            port: default_gateway_port(),
+        }
     }
 }
 
@@ -197,9 +210,7 @@ pub struct WorkspaceRuntimeState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum WorkspaceLoad {
-    Ready {
-        workspace: Box<WorkspacePackage>,
-    },
+    Ready { workspace: Box<WorkspacePackage> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,10 +254,18 @@ impl WorkspacePackage {
             ));
         }
         if self.gateway.listen_address != "127.0.0.1" && self.gateway.listen_address != "::1" {
-            issues.push(ValidationIssue::new("gateway.listen_address", "LOOPBACK_REQUIRED", "统一审计网关只能监听本机回环地址"));
+            issues.push(ValidationIssue::new(
+                "gateway.listen_address",
+                "LOOPBACK_REQUIRED",
+                "统一审计网关只能监听本机回环地址",
+            ));
         }
         if self.gateway.port < 1024 {
-            issues.push(ValidationIssue::new("gateway.port", "INVALID_PORT", "统一审计网关端口必须大于等于 1024"));
+            issues.push(ValidationIssue::new(
+                "gateway.port",
+                "INVALID_PORT",
+                "统一审计网关端口必须大于等于 1024",
+            ));
         }
         for publisher_id in &self.runtime_state.enabled_publishers {
             if !self.runtime.publishers.contains_key(publisher_id) {
@@ -262,76 +281,209 @@ impl WorkspacePackage {
         }
         for (asset_id, asset) in &self.wallet.assets {
             if asset_id != &asset.id || asset.id.trim().is_empty() {
-                issues.push(ValidationIssue::new(format!("wallet.assets.{asset_id}.id"), "KEY_MISMATCH", "API wallet asset ID must match its map key"));
+                issues.push(ValidationIssue::new(
+                    format!("wallet.assets.{asset_id}.id"),
+                    "KEY_MISMATCH",
+                    "API wallet asset ID must match its map key",
+                ));
             }
-            if !self.runtime.providers.contains_key(&asset.provider_instance_id) {
-                issues.push(ValidationIssue::new(format!("wallet.assets.{asset_id}.provider_instance_id"), "PROVIDER_NOT_FOUND", "API wallet asset references an unknown Provider instance"));
+            if !self
+                .runtime
+                .providers
+                .contains_key(&asset.provider_instance_id)
+            {
+                issues.push(ValidationIssue::new(
+                    format!("wallet.assets.{asset_id}.provider_instance_id"),
+                    "PROVIDER_NOT_FOUND",
+                    "API wallet asset references an unknown Provider instance",
+                ));
             }
             if asset.name.trim().is_empty() {
-                issues.push(ValidationIssue::new(format!("wallet.assets.{asset_id}.name"), "REQUIRED", "API wallet asset name is required"));
+                issues.push(ValidationIssue::new(
+                    format!("wallet.assets.{asset_id}.name"),
+                    "REQUIRED",
+                    "API wallet asset name is required",
+                ));
             }
         }
         let mut aliases = BTreeSet::new();
         for (endpoint_id, endpoint) in &self.direct_endpoints {
             let path = format!("direct_endpoints.{endpoint_id}");
             if endpoint_id != &endpoint.id || endpoint.name.trim().is_empty() {
-                issues.push(ValidationIssue::new(&path, "ENDPOINT_INVALID", "审计直出端点 ID 和名称必须有效"));
+                issues.push(ValidationIssue::new(
+                    &path,
+                    "ENDPOINT_INVALID",
+                    "审计直出端点 ID 和名称必须有效",
+                ));
             }
-            if endpoint.alias.trim().is_empty() || !endpoint.alias.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_') || !aliases.insert(endpoint.alias.clone()) {
-                issues.push(ValidationIssue::new(format!("{path}.alias"), "INVALID_OR_DUPLICATE_ALIAS", "直出别名必须唯一且只能包含 ASCII 字母、数字、连字符或下划线"));
+            if endpoint.alias.trim().is_empty()
+                || !endpoint
+                    .alias
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+                || !aliases.insert(endpoint.alias.clone())
+            {
+                issues.push(ValidationIssue::new(
+                    format!("{path}.alias"),
+                    "INVALID_OR_DUPLICATE_ALIAS",
+                    "直出别名必须唯一且只能包含 ASCII 字母、数字、连字符或下划线",
+                ));
             }
             if !self.wallet.assets.contains_key(&endpoint.asset_id) {
-                issues.push(ValidationIssue::new(format!("{path}.asset_id"), "ASSET_NOT_FOUND", "审计直出端点引用了不存在的钱包资产"));
+                issues.push(ValidationIssue::new(
+                    format!("{path}.asset_id"),
+                    "ASSET_NOT_FOUND",
+                    "审计直出端点引用了不存在的钱包资产",
+                ));
             }
-            if endpoint.models.is_empty() || endpoint.models.iter().any(|model| model.public_model.trim().is_empty() || model.upstream_model.trim().is_empty()) {
-                issues.push(ValidationIssue::new(format!("{path}.models"), "MODEL_MAPPING_REQUIRED", "审计直出端点至少需要一条有效模型映射"));
+            if endpoint.models.is_empty()
+                || endpoint.models.iter().any(|model| {
+                    model.public_model.trim().is_empty() || model.upstream_model.trim().is_empty()
+                })
+            {
+                issues.push(ValidationIssue::new(
+                    format!("{path}.models"),
+                    "MODEL_MAPPING_REQUIRED",
+                    "审计直出端点至少需要一条有效模型映射",
+                ));
             }
             if endpoint.timeout_ms == 0 || endpoint.max_retries > 10 {
-                issues.push(ValidationIssue::new(&path, "POLICY_INVALID", "直出超时必须大于零且重试次数不能超过 10"));
+                issues.push(ValidationIssue::new(
+                    &path,
+                    "POLICY_INVALID",
+                    "直出超时必须大于零且重试次数不能超过 10",
+                ));
             }
         }
         for (project_id, project) in &self.projects.projects {
-            if project_id != &project.id || project.name.trim().is_empty() || !route_segment(&project.id) {
-                issues.push(ValidationIssue::new(format!("projects.projects.{project_id}"), "PROJECT_INVALID", "Project ID and name must be valid"));
+            if project_id != &project.id
+                || project.name.trim().is_empty()
+                || !route_segment(&project.id)
+            {
+                issues.push(ValidationIssue::new(
+                    format!("projects.projects.{project_id}"),
+                    "PROJECT_INVALID",
+                    "Project ID and name must be valid",
+                ));
             }
             for (folder_id, folder) in &project.folders {
                 if folder_id != &folder.id || folder.name.trim().is_empty() {
-                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.folders.{folder_id}"), "FOLDER_INVALID", "Folder ID and name must be valid"));
+                    issues.push(ValidationIssue::new(
+                        format!("projects.projects.{project_id}.folders.{folder_id}"),
+                        "FOLDER_INVALID",
+                        "Folder ID and name must be valid",
+                    ));
                 }
                 for canvas_id in &folder.canvas_ids {
                     if !project.canvases.contains_key(canvas_id) {
-                        issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.folders.{folder_id}.canvas_ids"), "CANVAS_NOT_FOUND", "Folder references an unknown canvas"));
+                        issues.push(ValidationIssue::new(
+                            format!(
+                                "projects.projects.{project_id}.folders.{folder_id}.canvas_ids"
+                            ),
+                            "CANVAS_NOT_FOUND",
+                            "Folder references an unknown canvas",
+                        ));
                     }
                 }
             }
             for (canvas_id, canvas) in &project.canvases {
                 if let Some(folder_id) = &canvas.folder_id {
-                    let memberships = project.folders.values().filter(|folder| folder.canvas_ids.iter().filter(|id| *id == canvas_id).count() > 0).count();
-                    if memberships != 1 || !project.folders.get(folder_id).is_some_and(|folder| folder.canvas_ids.iter().any(|id| id == canvas_id)) {
-                        issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.folder_id"), "FOLDER_MEMBERSHIP_MISMATCH", "Canvas folder membership must be bidirectional and unique"));
+                    let memberships = project
+                        .folders
+                        .values()
+                        .filter(|folder| {
+                            folder
+                                .canvas_ids
+                                .iter()
+                                .filter(|id| *id == canvas_id)
+                                .count()
+                                > 0
+                        })
+                        .count();
+                    if memberships != 1
+                        || !project.folders.get(folder_id).is_some_and(|folder| {
+                            folder.canvas_ids.iter().any(|id| id == canvas_id)
+                        })
+                    {
+                        issues.push(ValidationIssue::new(
+                            format!(
+                                "projects.projects.{project_id}.canvases.{canvas_id}.folder_id"
+                            ),
+                            "FOLDER_MEMBERSHIP_MISMATCH",
+                            "Canvas folder membership must be bidirectional and unique",
+                        ));
                     }
-                } else if project.folders.values().any(|folder| folder.canvas_ids.iter().any(|id| id == canvas_id)) {
-                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}"), "FOLDER_MEMBERSHIP_MISMATCH", "Unfiled Canvas cannot appear in a Folder"));
+                } else if project
+                    .folders
+                    .values()
+                    .any(|folder| folder.canvas_ids.iter().any(|id| id == canvas_id))
+                {
+                    issues.push(ValidationIssue::new(
+                        format!("projects.projects.{project_id}.canvases.{canvas_id}"),
+                        "FOLDER_MEMBERSHIP_MISMATCH",
+                        "Unfiled Canvas cannot appear in a Folder",
+                    ));
                 }
-                if canvas_id != &canvas.id || canvas.name.trim().is_empty() || !route_segment(&canvas.id) {
-                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}"), "CANVAS_INVALID", "Canvas ID and name must be valid"));
+                if canvas_id != &canvas.id
+                    || canvas.name.trim().is_empty()
+                    || !route_segment(&canvas.id)
+                {
+                    issues.push(ValidationIssue::new(
+                        format!("projects.projects.{project_id}.canvases.{canvas_id}"),
+                        "CANVAS_INVALID",
+                        "Canvas ID and name must be valid",
+                    ));
                 }
-                if let Some(folder_id) = &canvas.folder_id && !project.folders.contains_key(folder_id) {
-                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.folder_id"), "FOLDER_NOT_FOUND", "Canvas references an unknown folder"));
+                if let Some(folder_id) = &canvas.folder_id
+                    && !project.folders.contains_key(folder_id)
+                {
+                    issues.push(ValidationIssue::new(
+                        format!("projects.projects.{project_id}.canvases.{canvas_id}.folder_id"),
+                        "FOLDER_NOT_FOUND",
+                        "Canvas references an unknown folder",
+                    ));
                 }
                 if let Err(error) = canvas.graph.validate() {
-                    append_issues(&mut issues, &format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), error);
+                    append_issues(
+                        &mut issues,
+                        &format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"),
+                        error,
+                    );
                 }
-                let publisher_nodes = canvas.graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Publisher).count();
-                let composer_nodes = canvas.graph.nodes.iter().filter(|node| node.kind == crate::graph::NodeKind::Composer).count();
+                let publisher_nodes = canvas
+                    .graph
+                    .nodes
+                    .iter()
+                    .filter(|node| node.kind == crate::graph::NodeKind::Publisher)
+                    .count();
+                let composer_nodes = canvas
+                    .graph
+                    .nodes
+                    .iter()
+                    .filter(|node| node.kind == crate::graph::NodeKind::Composer)
+                    .count();
                 if publisher_nodes != 1 {
-                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), "CANVAS_OUTPUT_REQUIRED", "New canvases must contain exactly one total Publisher output"));
+                    issues.push(ValidationIssue::new(
+                        format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"),
+                        "CANVAS_OUTPUT_REQUIRED",
+                        "New canvases must contain exactly one total Publisher output",
+                    ));
                 }
                 if composer_nodes != 1 {
-                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"), "CANVAS_COMPOSER_REQUIRED", "Canvas 必须且只能包含一个 Composer"));
+                    issues.push(ValidationIssue::new(
+                        format!("projects.projects.{project_id}.canvases.{canvas_id}.graph"),
+                        "CANVAS_COMPOSER_REQUIRED",
+                        "Canvas 必须且只能包含一个 Composer",
+                    ));
                 }
-                if let Some(publisher_id) = &canvas.publisher_id && !self.runtime.publishers.contains_key(publisher_id) {
-                    issues.push(ValidationIssue::new(format!("projects.projects.{project_id}.canvases.{canvas_id}.publisher_id"), "PUBLISHER_NOT_FOUND", "Canvas references an unknown Publisher"));
+                if let Some(publisher_id) = &canvas.publisher_id
+                    && !self.runtime.publishers.contains_key(publisher_id)
+                {
+                    issues.push(ValidationIssue::new(
+                        format!("projects.projects.{project_id}.canvases.{canvas_id}.publisher_id"),
+                        "PUBLISHER_NOT_FOUND",
+                        "Canvas references an unknown Publisher",
+                    ));
                 }
             }
         }
@@ -372,7 +524,10 @@ impl WorkspacePackage {
             .values()
             .filter_map(|publisher| publisher.config.token_ref.as_ref())
             .map(SecretRef::as_str);
-        let direct_refs = self.direct_endpoints.values().map(|endpoint| endpoint.token_ref.as_str());
+        let direct_refs = self
+            .direct_endpoints
+            .values()
+            .map(|endpoint| endpoint.token_ref.as_str());
         provider_refs
             .chain(publisher_refs)
             .chain(direct_refs)
@@ -412,12 +567,22 @@ impl WorkspacePackage {
                 (id.clone(), token_ready && upstreams_ready)
             })
             .collect();
-        let direct_endpoint_ready = self.direct_endpoints.iter().map(|(id, endpoint)| {
-            let asset_ready = self.wallet.assets.get(&endpoint.asset_id)
-                .and_then(|asset| self.runtime.providers.get(&asset.provider_instance_id))
-                .is_some_and(|provider| asset_and_provider_ready(provider, available));
-            (id.clone(), available.contains(endpoint.token_ref.as_str()) && asset_ready)
-        }).collect();
+        let direct_endpoint_ready = self
+            .direct_endpoints
+            .iter()
+            .map(|(id, endpoint)| {
+                let asset_ready = self
+                    .wallet
+                    .assets
+                    .get(&endpoint.asset_id)
+                    .and_then(|asset| self.runtime.providers.get(&asset.provider_instance_id))
+                    .is_some_and(|provider| asset_and_provider_ready(provider, available));
+                (
+                    id.clone(),
+                    available.contains(endpoint.token_ref.as_str()) && asset_ready,
+                )
+            })
+            .collect();
         WorkspaceSecretStatus {
             required,
             missing,
@@ -427,12 +592,22 @@ impl WorkspacePackage {
     }
 }
 
-fn asset_and_provider_ready(provider: &crate::runtime::ProviderInstance, available: &BTreeSet<String>) -> bool {
-    provider.enabled && provider.secret_refs.values().all(|reference| available.contains(reference.as_str()))
+fn asset_and_provider_ready(
+    provider: &crate::runtime::ProviderInstance,
+    available: &BTreeSet<String>,
+) -> bool {
+    provider.enabled
+        && provider
+            .secret_refs
+            .values()
+            .all(|reference| available.contains(reference.as_str()))
 }
 
 fn route_segment(value: &str) -> bool {
-    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 /// 安全加载 POC reset 工作区。旧 V1/V2/V3 一律拒绝加载，不迁移。
@@ -457,7 +632,10 @@ pub fn load_workspace_json(input: &str) -> Result<WorkspaceLoad, CoreError> {
         .and_then(|value| u32::try_from(value).ok())
         .ok_or_else(|| CoreError::new(ErrorCode::UnsupportedSchema, "工作区缺少 Schema 版本"))?;
     if schema_version != WORKSPACE_SCHEMA_VERSION {
-        return Err(CoreError::new(ErrorCode::UnsupportedSchema, format!("此 POC 只接受工作区 Schema {WORKSPACE_SCHEMA_VERSION}；旧工作区必须重建")));
+        return Err(CoreError::new(
+            ErrorCode::UnsupportedSchema,
+            format!("此 POC 只接受工作区 Schema {WORKSPACE_SCHEMA_VERSION}；旧工作区必须重建"),
+        ));
     }
     let workspace: WorkspacePackage = serde_json::from_value(raw)?;
     workspace.validate()?;
@@ -575,7 +753,8 @@ mod tests {
     fn non_current_schema_is_rejected_for_poc_reset() -> Result<(), CoreError> {
         let mut value = serde_json::to_value(empty_workspace())?;
         value["schema_version"] = Value::from(WORKSPACE_SCHEMA_VERSION + 1);
-        let error = load_workspace_json(&value.to_string()).expect_err("future schema must not load");
+        let error =
+            load_workspace_json(&value.to_string()).expect_err("future schema must not load");
         assert_eq!(error.code, ErrorCode::UnsupportedSchema);
         Ok(())
     }
@@ -586,7 +765,8 @@ mod tests {
         value["schema_version"] = Value::from(1);
         value.as_object_mut().expect("object").remove("wallet");
         value.as_object_mut().expect("object").remove("projects");
-        let error = load_workspace_json(&value.to_string()).expect_err("legacy schema must not migrate");
+        let error =
+            load_workspace_json(&value.to_string()).expect_err("legacy schema must not migrate");
         assert_eq!(error.code, ErrorCode::UnsupportedSchema);
         Ok(())
     }
@@ -594,15 +774,58 @@ mod tests {
     #[test]
     fn one_wallet_asset_can_back_multiple_isolated_direct_endpoints() -> Result<(), CoreError> {
         let mut workspace = empty_workspace();
-        let manifest = builtin_provider_manifests()?.into_iter().next().expect("builtin provider");
-        workspace.runtime.providers.insert("asset-provider".to_owned(), ProviderInstance { id: "asset-provider".to_owned(), manifest: manifest.clone(), endpoint_override: None, secret_refs: BTreeMap::new(), enabled: false });
-        workspace.wallet.assets.insert("asset".to_owned(), ApiAsset { id: "asset".to_owned(), provider_instance_id: "asset-provider".to_owned(), provider_id: manifest.provider.id, name: "Asset".to_owned(), enabled: false, billing: BillingPolicy::default() });
+        let manifest = builtin_provider_manifests()?
+            .into_iter()
+            .next()
+            .expect("builtin provider");
+        workspace.runtime.providers.insert(
+            "asset-provider".to_owned(),
+            ProviderInstance {
+                id: "asset-provider".to_owned(),
+                manifest: manifest.clone(),
+                endpoint_override: None,
+                secret_refs: BTreeMap::new(),
+                enabled: false,
+            },
+        );
+        workspace.wallet.assets.insert(
+            "asset".to_owned(),
+            ApiAsset {
+                id: "asset".to_owned(),
+                provider_instance_id: "asset-provider".to_owned(),
+                provider_id: manifest.provider.id,
+                name: "Asset".to_owned(),
+                enabled: false,
+                billing: BillingPolicy::default(),
+            },
+        );
         for (id, alias) in [("client-a", "client-a"), ("client-b", "client-b")] {
-            workspace.direct_endpoints.insert(id.to_owned(), DirectEndpoint { id: id.to_owned(), name: id.to_owned(), alias: alias.to_owned(), asset_id: "asset".to_owned(), token_ref: SecretRef::parse(format!("secret://direct/{id}/token"))?, enabled: false, models: vec![DirectModelMapping { public_model: "default".to_owned(), upstream_model: "upstream".to_owned() }], timeout_ms: 30_000, max_retries: 2, audit_tags: BTreeMap::new(), billing_override: None });
+            workspace.direct_endpoints.insert(
+                id.to_owned(),
+                DirectEndpoint {
+                    id: id.to_owned(),
+                    name: id.to_owned(),
+                    alias: alias.to_owned(),
+                    asset_id: "asset".to_owned(),
+                    token_ref: SecretRef::parse(format!("secret://direct/{id}/token"))?,
+                    enabled: false,
+                    models: vec![DirectModelMapping {
+                        public_model: "default".to_owned(),
+                        upstream_model: "upstream".to_owned(),
+                    }],
+                    timeout_ms: 30_000,
+                    max_retries: 2,
+                    audit_tags: BTreeMap::new(),
+                    billing_override: None,
+                },
+            );
         }
         workspace.validate()?;
         assert_eq!(workspace.direct_endpoints.len(), 2);
-        assert_ne!(workspace.direct_endpoints["client-a"].token_ref, workspace.direct_endpoints["client-b"].token_ref);
+        assert_ne!(
+            workspace.direct_endpoints["client-a"].token_ref,
+            workspace.direct_endpoints["client-b"].token_ref
+        );
         Ok(())
     }
 }

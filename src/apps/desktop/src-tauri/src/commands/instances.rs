@@ -55,6 +55,7 @@ async fn build_control_center_snapshot(state: &DesktopState) -> Result<ControlCe
     let gateway = state.gateway.lock().await;
     let gateway_running = gateway.is_some();
     let mounted = gateway.as_ref().map(|item| item.entry_prefixes().iter().cloned().collect::<BTreeSet<_>>()).unwrap_or_default();
+    let blocked = gateway.as_ref().map(|item| item.entry_statuses().into_iter().filter(|entry| entry.blocked).map(|entry| (entry.prefix, entry.reason)).collect::<BTreeMap<_, _>>()).unwrap_or_default();
     let gateway_error = state.gateway_error.lock().await.clone();
     let base = gateway_origin(&workspace.gateway.listen_address, workspace.gateway.port);
     let mut instances = Vec::new();
@@ -66,7 +67,8 @@ async fn build_control_center_snapshot(state: &DesktopState) -> Result<ControlCe
         let mut blocking_reasons = provider_secret_reasons(&workspace, &endpoint.asset_id, &state.secret_store);
         if !token_ready { blocking_reasons.push("本地访问 Token 尚未配置。".to_owned()); }
         if endpoint.models.is_empty() { blocking_reasons.push("尚未配置公开模型映射。".to_owned()); }
-        let actual_running = gateway_running && mounted.contains(&prefix);
+        if let Some(reason) = blocked.get(&prefix).and_then(|reason| reason.clone()) { blocking_reasons.push(reason); }
+        let actual_running = gateway_running && mounted.contains(&prefix) && !blocked.contains_key(&prefix);
         let status = if endpoint.enabled && actual_running { ManagedInstanceStatus::Running }
             else if endpoint.enabled && !blocking_reasons.is_empty() { ManagedInstanceStatus::Blocked }
             else if endpoint.enabled { ManagedInstanceStatus::Failed }
@@ -94,12 +96,16 @@ async fn build_control_center_snapshot(state: &DesktopState) -> Result<ControlCe
             let publisher = canvas.publisher_id.as_ref().and_then(|publisher_id| workspace.runtime.publishers.get(publisher_id));
             let desired_running = canvas.publisher_id.as_ref().is_some_and(|publisher_id| workspace.runtime_state.enabled_publishers.contains(publisher_id));
             let prefix = format!("/canvas/{}/{}", project.id, canvas.id);
-            let actual_running = gateway_running && mounted.contains(&prefix);
+            let actual_running = gateway_running && mounted.contains(&prefix) && !blocked.contains_key(&prefix);
             let mut blocking_reasons = Vec::new();
-            let asset_ids = canvas.graph.nodes.iter().filter_map(|node| node.config.get("asset_id").and_then(Value::as_str)).collect::<BTreeSet<_>>();
+            if let Some(reason) = blocked.get(&prefix).and_then(|reason| reason.clone()) { blocking_reasons.push(reason); }
+            let asset_ids = canvas.graph.nodes.iter().filter_map(|node| node.provider_config().map(|config| config.asset_id.clone())).collect::<BTreeSet<_>>();
             for asset_id in &asset_ids { blocking_reasons.extend(provider_secret_reasons(&workspace, asset_id, &state.secret_store)); }
             let compilation = compile_graph(&canvas.graph, &workspace.wallet, &workspace.runtime);
-            if let Err(error) = &compilation { blocking_reasons.push(error.message.clone()); }
+            match &compilation {
+                Err(error) => blocking_reasons.push(error.message.clone()),
+                Ok(compiled) => blocking_reasons.extend(compiled.report.errors.iter().map(|issue| issue.message.clone())),
+            }
             let token_ready = publisher.and_then(|item| item.config.token_ref.as_ref()).is_some_and(|reference| state.secret_store.contains(reference));
             if publisher.is_some() && !token_ready { blocking_reasons.push("Canvas 本地访问 Token 尚未配置。".to_owned()); }
             let status = if publisher.is_none() { ManagedInstanceStatus::Unpublished }
@@ -113,7 +119,7 @@ async fn build_control_center_snapshot(state: &DesktopState) -> Result<ControlCe
             instances.push(ManagedInstance {
                 id, kind: ManagedInstanceKind::Canvas, name: canvas.name.clone(), ownership: format!("{} / {}", project.name, canvas.name),
                 project_id: Some(project.id.clone()), project_name: Some(project.name.clone()), canvas_id: Some(canvas.id.clone()), direct_endpoint_id: None, audit_publisher_id: canvas.publisher_id.clone(),
-                asset_names: asset_ids.iter().filter_map(|asset_id| workspace.wallet.assets.get(*asset_id).map(|asset| asset.name.clone())).collect(),
+                asset_names: asset_ids.iter().filter_map(|asset_id| workspace.wallet.assets.get(asset_id).map(|asset| asset.name.clone())).collect(),
                 base_url: publisher.map(|_| format!("{base}{prefix}/v1")),
                 public_models: publisher.map(|item| item.routes.iter().map(|route| route.public_model.clone()).collect()).unwrap_or_default(),
                 token_ready, secrets_ready: !blocking_reasons.iter().any(|item| item.contains("Secret")), desired_running, status,
@@ -161,15 +167,18 @@ fn apply_instance_start(workspace: &mut WorkspacePackage, store: &WindowsCredent
             let publisher = workspace.runtime.publishers.get(&publisher_id).ok_or_else(|| "Canvas Publisher 不存在。".to_owned())?;
             let token_ref = publisher.config.token_ref.as_ref().ok_or_else(|| "Canvas 尚未配置本地 Token。".to_owned())?;
             if !store.contains(token_ref) { return Err("Canvas 本地 Token 不存在。".to_owned()); }
-            for asset_id in canvas.graph.nodes.iter().filter_map(|node| node.config.get("asset_id").and_then(Value::as_str)) {
+            for asset_id in canvas.graph.nodes.iter().filter_map(|node| node.provider_config().map(|config| config.asset_id.as_str())) {
                 let reasons = provider_secret_reasons(workspace, asset_id, store);
                 if !reasons.is_empty() { return Err(reasons.join(" ")); }
             }
             let compiled = compile_graph(&canvas.graph, &workspace.wallet, &workspace.runtime).map_err(|error| error.message)?;
-            if !allow_warnings && !compiled.report.warnings.is_empty() { return Err(format!("需要确认能力警告：{}", compiled.report.warnings.join("；"))); }
+            if !compiled.report.valid { return Err(compiled.report.errors.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>().join("；")); }
+            if !allow_warnings && !compiled.report.warnings.is_empty() { return Err(format!("需要确认能力警告：{}", compiled.report.warnings.iter().map(|issue| issue.message.as_str()).collect::<Vec<_>>().join("；"))); }
             let was_running = workspace.runtime_state.enabled_publishers.contains(&publisher_id);
             let has_unapplied_changes = canvas.draft_revision != canvas.applied_revision;
-            workspace.runtime.publishers.get_mut(&publisher_id).expect("publisher checked").routes = compiled.routes;
+            let runtime_publisher = workspace.runtime.publishers.get_mut(&publisher_id).expect("publisher checked");
+            runtime_publisher.routes = compiled.routes;
+            runtime_publisher.middleware = compiled.middleware;
             let target = workspace.projects.projects.get_mut(&first).and_then(|project| project.canvases.get_mut(&canvas_id)).expect("canvas checked");
             target.applied_graph = Some(target.graph.clone());
             target.applied_revision = target.draft_revision;
@@ -197,40 +206,23 @@ fn apply_instance_stop(workspace: &mut WorkspacePackage, instance_id: &str) -> R
 }
 
 async fn control_instances(state: &DesktopState, app: &AppHandle, ids: Vec<String>, start: bool, allow_warnings: bool) -> Result<InstanceBatchResult, String> {
+    let _mutation = state.workspace_mutation.lock().await;
     let before = build_control_center_snapshot(state).await?;
     let previous = before.instances.iter().map(|item| (item.id.clone(), item.status)).collect::<BTreeMap<_, _>>();
-    let original = load_workspace(&state.repository)?;
-    let mut next = original.clone();
-    let mut results = Vec::new();
-    let mut changed = false;
-    for id in ids {
-        let old_status = previous.get(&id).copied().unwrap_or(ManagedInstanceStatus::Failed);
-        let operation = if start { apply_instance_start(&mut next, &state.secret_store, &id, allow_warnings) } else { apply_instance_stop(&mut next, &id) };
-        match operation {
-            Ok(item_changed) => {
-                changed |= item_changed;
-                results.push(ManagedInstanceActionResult { instance_id: id, previous_status: old_status, next_status: if start { ManagedInstanceStatus::Running } else { ManagedInstanceStatus::Stopped }, success: true, skipped: !item_changed, message: if item_changed { if start { "已加入运行计划。" } else { "已停止接收新请求。" } } else { "状态无需更改。" }.to_owned(), repair_target: None });
+    let secret_store = Arc::clone(&state.secret_store);
+    let (mut results, transaction) = commit_workspace_change_locked(state, WorkspaceChangeOptions::CONFIGURATION, move |workspace| {
+        let mut results = Vec::new();
+        for id in ids {
+            let old_status = previous.get(&id).copied().unwrap_or(ManagedInstanceStatus::Failed);
+            let operation = if start { apply_instance_start(workspace, &secret_store, &id, allow_warnings) } else { apply_instance_stop(workspace, &id) };
+            match operation {
+                Ok(item_changed) => results.push(ManagedInstanceActionResult { instance_id: id, previous_status: old_status, next_status: if start { ManagedInstanceStatus::Running } else { ManagedInstanceStatus::Stopped }, success: true, skipped: !item_changed, message: if item_changed { if start { "已加入运行计划。" } else { "已停止接收新请求。" } } else { "状态无需更改。" }.to_owned(), repair_target: None }),
+                Err(message) => results.push(ManagedInstanceActionResult { instance_id: id, previous_status: old_status, next_status: old_status, success: false, skipped: false, message, repair_target: Some("details".to_owned()) }),
             }
-            Err(message) => results.push(ManagedInstanceActionResult { instance_id: id, previous_status: old_status, next_status: old_status, success: false, skipped: false, message, repair_target: Some("details".to_owned()) }),
         }
-    }
-    let mut gateway_refreshed = false;
-    if changed {
-        next.validate().map_err(|error| error.message)?;
-        state.repository.save(&next).map_err(safe_error)?;
-        if let Err(error) = reload_control_plane(state).await.and_then(|_| Ok(())) {
-            let _ = state.repository.save(&original);
-            let _ = reload_control_plane(state).await;
-            return Err(error);
-        }
-        if let Err(error) = restart_gateway(state).await {
-            let _ = state.repository.save(&original);
-            let _ = reload_control_plane(state).await;
-            let _ = restart_gateway(state).await;
-            return Err(format!("网关刷新失败，运行状态已回滚：{error}"));
-        }
-        gateway_refreshed = true;
-    }
+        Ok(results)
+    }).await?;
+    let gateway_refreshed = transaction.gateway_rebuilt;
     let snapshot = build_control_center_snapshot(state).await?;
     for result in &mut results {
         if let Some(instance) = snapshot.instances.iter().find(|item| item.id == result.instance_id) { result.next_status = instance.status; }
